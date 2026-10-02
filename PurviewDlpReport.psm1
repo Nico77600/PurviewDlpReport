@@ -672,7 +672,7 @@ function Select-DlpExoModule {
         Returns the module and the versions skipped; throws a message with the command to run otherwise.
     #>
     param([AllowEmptyCollection()][object[]]$Available, [AllowNull()]$Loaded, [Parameter(Mandatory)][string]$Mode)
-    $install = 'Install-Module ExchangeOnlineManagement -MinimumVersion 3.10.1 -Scope CurrentUser'
+    $install = 'Install-Module ExchangeOnlineManagement -MinimumVersion 3.10.1 -Scope CurrentUser -Force'
     $problem = {
         param($Version)
         $known = $script:ExoKnownIssues[$Version.ToString()]
