@@ -8,6 +8,17 @@ updated: 2026-09-30
 
 # Purview DLP Report — Administrator guide
 
+> [!IMPORTANT]
+> Files downloaded from the Internet may be blocked by Windows and fail to run. Before using this project, unblock every file in the downloaded folder:
+>
+> ```powershell
+> Get-ChildItem "C:\Chemin\Du\Dossier" -Recurse -File -Force | Unblock-File
+> ```
+>
+> Replace the example path with the folder where you downloaded or extracted this project.
+>
+> If an `Install-Module` command reports that the module already exists, add `-Force`. If the installed version still conflicts, close PowerShell, run `Uninstall-Module <ModuleName> -AllVersions` if appropriate, then install the required version again.
+
 > Reports the Exchange Online messages matched by a Microsoft Purview DLP rule — by default, **messages sent to more than 25 recipients** — as CSV and HTML files, **one row per Message ID**.
 
 ```cards
@@ -128,8 +139,8 @@ clock | Report in seconds | A 7-day report is written in about **6 seconds** —
 ```powershell
 # Install or update the Exchange Online module: 3.10.1 or later with PowerShell 7.6,
 # 3.9.2 with PowerShell 7.4 or 7.5
-Install-Module ExchangeOnlineManagement -MinimumVersion 3.10.1 -Scope CurrentUser
-Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.2 -Scope CurrentUser
+Install-Module ExchangeOnlineManagement -MinimumVersion 3.10.1 -Scope CurrentUser -Force
+Install-Module ExchangeOnlineManagement -RequiredVersion 3.9.2 -Scope CurrentUser -Force
 ```
 
 ### Permissions
@@ -584,7 +595,7 @@ file | Report | Columns, recipients option, splitting, HTML, CSV formula protect
 |---|---|
 | **How to recognise it** | The log shows the error at step *Connecting to Security & Compliance PowerShell*, with a path containing `ExchangeOnlineManagement\3.10.0`. |
 | **What the tool does** | In certificate mode it skips 3.10.0 and uses another installed version (3.9.0 or later), and says so: *"ExchangeOnlineManagement 3.10.0 … skipped, 3.9.2 used"*. If 3.10.0 is the only version, it stops and gives the command to run. |
-| **What to do** | `Install-Module ExchangeOnlineManagement -MinimumVersion 3.10.1 -Scope CurrentUser` (PowerShell 7.6), then **open a new PowerShell window** — a module already loaded stays in memory until the window is closed. |
+| **What to do** | `Install-Module ExchangeOnlineManagement -MinimumVersion 3.10.1 -Scope CurrentUser -Force` (PowerShell 7.6), then **open a new PowerShell window** — a module already loaded stays in memory until the window is closed. |
 | **Lab** | Reproduced on 2026-09-30 outside the tool (PowerShell 7.6.6); 3.9.2 and 3.10.1 validated with the same application. |
 
 ### Configuration and connection
