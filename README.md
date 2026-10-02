@@ -55,6 +55,10 @@ The **administrator guide** covers installation, configuration, unattended execu
 - [docs/PurviewDlpReport-Guide.md](docs/PurviewDlpReport-Guide.md)
 - `docs/PurviewDlpReport-Guide.html` — the same guide as a single HTML file (download it and open it locally)
 
+## Per business line: Microsoft Fabric companion
+
+To give every business line, manager and employee **their own view** of the report instead of sending everyone every row, the optional companion [**Purview DLP Report for Microsoft Fabric**](https://github.com/Nico77600/PurviewDlpReport-Fabric) publishes the same rows to Microsoft Fabric: a Power BI report with row-level security and an agent in Microsoft Teams. This tool is not changed and does not depend on it.
+
 ## Tests
 
 ```powershell
