@@ -1,5 +1,7 @@
 # Purview DLP Report
 
+Reports the Exchange Online messages matched by a **Microsoft Purview DLP rule** — for example the messages sent to **more than 25 recipients** — as CSV and HTML files, **one row per Message ID**.
+
 > [!IMPORTANT]
 > Files downloaded from the Internet may be blocked by Windows and fail to run. Before using this project, unblock every file in the downloaded folder:
 >
@@ -9,9 +11,7 @@
 >
 > Replace the example path with the folder where you downloaded or extracted this project.
 >
-> If an `Install-Module` command reports that the module already exists, add `-Force`. If the installed version still conflicts, close PowerShell, run `Uninstall-Module <ModuleName> -AllVersions` if appropriate, then install the required version again.
-
-Reports the Exchange Online messages matched by a **Microsoft Purview DLP rule** — for example the messages sent to **more than 25 recipients** — as CSV and HTML files, **one row per Message ID**.
+> The `Install-Module` commands in this documentation use `-Force`, so they also update or reinstall a module that is already installed. If an older version still conflicts, close every PowerShell window, open a new one (as administrator for `-Scope AllUsers`), run `Uninstall-Module <ModuleName> -AllVersions -Force`, then run the `Install-Module` command again.
 
 ![HTML report](docs/images/report-overview.png)
 

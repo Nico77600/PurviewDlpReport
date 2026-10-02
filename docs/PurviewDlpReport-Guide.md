@@ -3,10 +3,12 @@ title: Purview DLP Report
 subtitle: Administrator guide
 version: 2.1.1
 author: Nicolas Fabert
-updated: 2026-09-30
+updated: 2026-10-02
 ---
 
 # Purview DLP Report — Administrator guide
+
+> Reports the Exchange Online messages matched by a Microsoft Purview DLP rule — by default, **messages sent to more than 25 recipients** — as CSV and HTML files, **one row per Message ID**.
 
 > [!IMPORTANT]
 > Files downloaded from the Internet may be blocked by Windows and fail to run. Before using this project, unblock every file in the downloaded folder:
@@ -17,9 +19,7 @@ updated: 2026-09-30
 >
 > Replace the example path with the folder where you downloaded or extracted this project.
 >
-> If an `Install-Module` command reports that the module already exists, add `-Force`. If the installed version still conflicts, close PowerShell, run `Uninstall-Module <ModuleName> -AllVersions` if appropriate, then install the required version again.
-
-> Reports the Exchange Online messages matched by a Microsoft Purview DLP rule — by default, **messages sent to more than 25 recipients** — as CSV and HTML files, **one row per Message ID**.
+> The `Install-Module` commands in this documentation use `-Force`, so they also update or reinstall a module that is already installed. If an older version still conflicts, close every PowerShell window, open a new one (as administrator for `-Scope AllUsers`), run `Uninstall-Module <ModuleName> -AllVersions -Force`, then run the `Install-Module` command again.
 
 ```cards
 target | What it answers | Who sends mail to more than 25 recipients, to whom, about what, and when.
@@ -158,7 +158,7 @@ key | Application (unattended) | A dedicated app registration with a certificate
 
 ```steps
 Copy the package | Copy the package folder (`PurviewDlpReport-<version>`, made by `tools\New-DlpPackage.ps1`) to the server, for example `D:\Tools\PurviewDlpReport`.
-Unblock the files | `Get-ChildItem D:\Tools\PurviewDlpReport -Recurse | Unblock-File` (files copied from the Internet or a share).
+Unblock the files | `Get-ChildItem D:\Tools\PurviewDlpReport -Recurse -File -Force | Unblock-File` (files copied from the Internet or a share).
 Edit the configuration | `config\PurviewDlpReport.config.psd1` — the *Tenant*, *Target* and *Authentication* values are empty in the package: fill them in (chapter 6).
 Check without connecting | `.\Invoke-PurviewDlpReport.ps1 -Mode Status` — checks the configuration and builds the engine (about 2 s, once). On a new installation it ends with *Ready for the first collection*; later it shows the content of the database.
 ```
