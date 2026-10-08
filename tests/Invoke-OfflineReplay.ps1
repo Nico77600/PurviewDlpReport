@@ -22,7 +22,7 @@ param(
     [Parameter(Mandatory)][DateTimeOffset]$StartUtc,
     [Parameter(Mandatory)][DateTimeOffset]$EndUtc,
     [Parameter(Mandatory)][string]$RunDirectory,
-    [string]$ConfigPath = (Join-Path $PSScriptRoot '..\config\PurviewDlpReport.config.psd1'),
+    [string]$ConfigPath = (Join-Path $PSScriptRoot '..\package\config\PurviewDlpReport.config.psd1'),
     [int]$PageSize = 1000,
     [string]$SplitBy = 'Week',
     [int]$MaxRowsPerFile = 500000,
@@ -30,7 +30,8 @@ param(
     [string]$ReferenceCsv
 )
 $ErrorActionPreference = 'Stop'
-$root = Split-Path $PSScriptRoot -Parent
+$repoRoot = Split-Path $PSScriptRoot -Parent
+$root = Join-Path $repoRoot 'package'
 $total = [Diagnostics.Stopwatch]::StartNew()
 if (Test-Path -LiteralPath $RunDirectory) { throw "RunDirectory already exists: $RunDirectory" }
 [void][IO.Directory]::CreateDirectory($RunDirectory)

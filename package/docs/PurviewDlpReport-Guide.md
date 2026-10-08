@@ -177,7 +177,7 @@ Check without connecting | `.\Invoke-PurviewDlpReport.ps1 -Mode Status` — chec
 | `data\` · `reports\` · `logs\` · `bin\` | Created at run time — the package contains **no database**, the first run creates an empty one. **Back up `data\`**: it is the only history beyond 30 days. |
 
 > [!NOTE]
-> The package holds only what is needed to run. The git repository of the tool also contains the Markdown source of this guide, `tests\` (automated tests) and `tools\` (documentation builder, package builder) — see chapters 11 to 13.
+> The package holds only what is needed to run. The git repository of the tool also contains this Markdown guide in `package\docs\`, `tests\` (automated tests) and `tools\` (documentation builder, package builder) — see chapters 11 to 13.
 
 <!-- icon: settings -->
 ## 6. Configuration
@@ -542,8 +542,8 @@ Test | Adapt *writes one row per Message ID with the business columns*.
 | Change splitting or file names | `ReportPlanner.Plan`, `PeriodLabel`, `FileLabel` (engine). |
 | Add a period ("current week"…) | `ValidateSet` of `-Range` **and** of `Resolve-DlpPeriod`, a new `switch` branch, a test in *Periods*. |
 | Change the console output | Always go through `Write-DlpStep`, `Write-DlpItem`, `Write-DlpTableRow`, `Write-DlpSummary`: they also write the log. Icons: `$script:Icons` at the top of the module. |
-| Update the SQLite libraries | nuget.org packages `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.*` (same version): `lib/net8.0` into `lib\sqlite`, `runtimes/win-*/native/e_sqlite3.dll` into `lib\sqlite\runtimes`. Delete `bin\`, run the tests, update `THIRD-PARTY-NOTICES.md`. |
-| Change this guide | Edit `docs\PurviewDlpReport-Guide.md` (callouts `> [!NOTE]`, blocks `cards`, `steps`, `flow`), then run `.\tools\Build-Documentation.ps1`. |
+| Update the SQLite libraries | nuget.org packages `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.*` (same version): `lib/net8.0` into `package\lib\sqlite`, `runtimes/win-*/native/e_sqlite3.dll` into `package\lib\sqlite\runtimes`. Delete `bin\`, run the tests, update `THIRD-PARTY-NOTICES.md`. |
+| Change this guide | Edit `package\docs\PurviewDlpReport-Guide.md` (callouts `> [!NOTE]`, blocks `cards`, `steps`, `flow`), then run `.\tools\Build-Documentation.ps1`. |
 
 ### PowerShell pitfalls met during the build
 
@@ -707,7 +707,7 @@ SELECT reason, COUNT(*) FROM quarantine GROUP BY reason;
 <!-- icon: tag -->
 ## Annex E — Versioning and release checklist
 
-Version numbers follow **MAJOR.MINOR.PATCH** — MAJOR: incompatible change (configuration or database) · MINOR: new feature · PATCH: fix. The version appears in `PurviewDlpReport.psd1`, `$script:ToolVersion`, the file headers, this guide and `CHANGELOG.md`. The folder is a **git** repository (`git log --oneline`, `git tag`).
+Version numbers follow **MAJOR.MINOR.PATCH** — MAJOR: incompatible change (configuration or database) · MINOR: new feature · PATCH: fix. The version appears in `package\PurviewDlpReport.psd1`, `$script:ToolVersion`, the file headers, this guide and `CHANGELOG.md`. The folder is a **git** repository (`git log --oneline`, `git tag`).
 
 ```steps
 Code | Update the code and the comments, in English.

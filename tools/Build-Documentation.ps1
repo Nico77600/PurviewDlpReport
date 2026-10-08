@@ -1,7 +1,7 @@
 #Requires -Version 7.4
 <#
 .SYNOPSIS
-    Builds docs\PurviewDlpReport-Guide.html from docs\PurviewDlpReport-Guide.md.
+    Builds package\docs\PurviewDlpReport-Guide.html from package\docs\PurviewDlpReport-Guide.md.
 
 .DESCRIPTION
     The Markdown guide stays readable as plain text (and on GitHub / Azure DevOps). This script
@@ -33,8 +33,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Source = (Join-Path $PSScriptRoot '..\docs\PurviewDlpReport-Guide.md'),
-    [string]$Destination = (Join-Path $PSScriptRoot '..\docs\PurviewDlpReport-Guide.html')
+    [string]$Source = (Join-Path $PSScriptRoot '..\package\docs\PurviewDlpReport-Guide.md'),
+    [string]$Destination = (Join-Path $PSScriptRoot '..\package\docs\PurviewDlpReport-Guide.html')
 )
 $ErrorActionPreference = 'Stop'
 $Source = (Resolve-Path $Source).Path

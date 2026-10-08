@@ -16,7 +16,7 @@
     chapter 6). The script then checks that none of these values appears anywhere in the package.
 
 .PARAMETER Destination
-    Package folder. Default: package\PurviewDlpReport-<version>, next to the tool folder.
+    Package folder. Default: package\PurviewDlpReport-<version>, next to the repository folder.
 
 .PARAMETER Force
     Replace the destination folder if it already contains a package. A folder that contains a data\
@@ -38,12 +38,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$version = (Import-PowerShellDataFile (Join-Path $root 'PurviewDlpReport.psd1')).ModuleVersion
+$packageRoot = Join-Path $root 'package'
+$version = (Import-PowerShellDataFile (Join-Path $packageRoot 'PurviewDlpReport.psd1')).ModuleVersion
 if (-not $Destination) { $Destination = Join-Path (Split-Path $root -Parent) "package\PurviewDlpReport-$version" }
 $Destination = [IO.Path]::GetFullPath($Destination, (Get-Location).Path).TrimEnd('\')
 
-$rootPrefix = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
-if (($Destination + '\').StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or $rootPrefix.StartsWith($Destination + '\', [StringComparison]::OrdinalIgnoreCase)) {
+$repoPrefix = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+if (($Destination + '\').StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or $repoPrefix.StartsWith($Destination + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw "The destination must be outside the tool folder: $Destination"
 }
 if (Test-Path -LiteralPath $Destination) {
@@ -57,10 +58,10 @@ if (Test-Path -LiteralPath $Destination) {
 $files = [Collections.Generic.List[string]]::new()
 foreach ($f in 'Invoke-PurviewDlpReport.ps1', 'PurviewDlpReport.psd1', 'PurviewDlpReport.psm1', 'THIRD-PARTY-NOTICES.md',
     'src\PurviewDlpReport.Engine.cs', 'templates\Report.template.html', 'docs\PurviewDlpReport-Guide.html') { $files.Add($f) }
-Get-ChildItem -LiteralPath (Join-Path $root 'lib\sqlite') -Recurse -File | ForEach-Object { $files.Add($_.FullName.Substring($rootPrefix.Length)) }
+Get-ChildItem -LiteralPath (Join-Path $packageRoot 'lib\sqlite') -Recurse -File | ForEach-Object { $files.Add($_.FullName.Substring($packageRoot.Length + 1)) }
 
 foreach ($f in $files) {
-    $source = Join-Path $root $f
+    $source = Join-Path $packageRoot $f
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing file in the tool folder: $f" }
     $target = Join-Path $Destination $f
     [void][IO.Directory]::CreateDirectory((Split-Path $target -Parent))
@@ -69,7 +70,7 @@ foreach ($f in $files) {
 
 # ---- Configuration with the tenant values emptied -------------------------------------------------------
 $configRelative = 'config\PurviewDlpReport.config.psd1'
-$config = [IO.File]::ReadAllText((Join-Path $root $configRelative))
+$config = [IO.File]::ReadAllText((Join-Path $packageRoot $configRelative))
 $emptied = [Collections.Generic.List[string]]::new()
 foreach ($key in 'TenantId', 'Organization', 'PolicyId', 'RuleId', 'UserPrincipalName', 'AppId', 'CertificateThumbprint') {
     $pattern = "(?m)^(\s*$key\s*=\s*)'([^']*)'"

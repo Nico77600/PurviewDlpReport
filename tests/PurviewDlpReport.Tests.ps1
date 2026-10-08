@@ -12,7 +12,8 @@
 #>
 
 BeforeAll {
-    $script:Root = Split-Path $PSScriptRoot -Parent
+    $script:RepoRoot = Split-Path $PSScriptRoot -Parent
+    $script:Root = Join-Path $script:RepoRoot 'package'
     Import-Module (Join-Path $script:Root 'PurviewDlpReport.psd1') -Force
     Initialize-DlpEngine -Root $script:Root
     # Fictitious identifiers: the tests never depend on a real tenant.

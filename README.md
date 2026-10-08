@@ -13,7 +13,7 @@ Reports the Exchange Online messages matched by a **Microsoft Purview DLP rule**
 >
 > The `Install-Module` commands in this documentation use `-Force`, so they also update or reinstall a module that is already installed. If an older version still conflicts, close every PowerShell window, open a new one (as administrator for `-Scope AllUsers`), run `Uninstall-Module <ModuleName> -AllVersions -Force`, then run the `Install-Module` command again.
 
-![HTML report](docs/images/report-overview.png)
+![HTML report](package/docs/images/report-overview.png)
 
 ## Why
 
@@ -32,7 +32,7 @@ Activity Explorer  ──►  local SQLite history  ──►  CSV + HTML report
 - **Report**: one row per unique Message ID — detection time, sender, recipients (optional), subject, recipient count, Message ID — as CSV and a self-contained HTML file with filters, Top 10 senders and message details. Large periods are split by day, week or number of rows.
 - **Read-only** for Microsoft 365: the tool never sends e-mail and never changes a setting.
 
-![Console](docs/images/console-report.png)
+![Console](package/docs/images/console-report.png)
 
 ## Requirements
 
@@ -48,7 +48,7 @@ Activity Explorer  ──►  local SQLite history  ──►  CSV + HTML report
 
 ```powershell
 git clone https://github.com/Nico77600/PurviewDlpReport.git
-cd PurviewDlpReport
+cd PurviewDlpReport\package
 notepad .\config\PurviewDlpReport.config.psd1      # TenantId, PolicyId, RuleId, authentication
 
 .\Invoke-PurviewDlpReport.ps1 -Mode Status          # checks the configuration, no connection
@@ -57,14 +57,14 @@ notepad .\config\PurviewDlpReport.config.psd1      # TenantId, PolicyId, RuleId,
 .\Invoke-PurviewDlpReport.ps1 -Mode Collect         # daily collection (scheduled task)
 ```
 
-Activity Explorer keeps 30 days of data: schedule the daily collection. The zip of each [release](https://github.com/Nico77600/PurviewDlpReport/releases) contains only the files needed to run.
+Activity Explorer keeps 30 days of data: schedule the daily collection. The `package` folder of this repository holds exactly the files needed to run Purview DLP Report, with the guide. The zip of each [release](https://github.com/Nico77600/PurviewDlpReport/releases) contains the same run-time files with the HTML guide; `.\tools\New-DlpPackage.ps1` builds that zip content from the repository.
 
 ## Documentation
 
 The **administrator guide** covers installation, configuration, unattended execution with a certificate, least-privilege access, the report, troubleshooting and the internals:
 
-- [docs/PurviewDlpReport-Guide.md](docs/PurviewDlpReport-Guide.md)
-- `docs/PurviewDlpReport-Guide.html` — the same guide as a single HTML file (download it and open it locally)
+- [package/docs/PurviewDlpReport-Guide.md](package/docs/PurviewDlpReport-Guide.md)
+- `package/docs/PurviewDlpReport-Guide.html` — the same guide as a single HTML file (download it and open it locally)
 
 ## Per business line: Microsoft Fabric companion
 
@@ -78,7 +78,7 @@ Invoke-Pester -Path .\tests      # Pester 5, no connection to Microsoft 365
 
 ## License
 
-[MIT](LICENSE). The bundled SQLite components keep their own licenses: see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[MIT](LICENSE). The bundled SQLite components keep their own licenses: see [THIRD-PARTY-NOTICES.md](package/THIRD-PARTY-NOTICES.md).
 
 ## Disclaimer
 
