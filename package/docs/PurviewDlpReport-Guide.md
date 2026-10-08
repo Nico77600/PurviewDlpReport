@@ -1,14 +1,14 @@
 ---
 title: Purview DLP Report
-subtitle: Administrator guide
+subtitle: Developer guide
 version: 2.1.1
 author: Nicolas Fabert
-updated: 2026-10-02
+updated: 2026-10-08
 ---
 
-# Purview DLP Report — Administrator guide
+# Purview DLP Report — Developer guide
 
-> Reports the Exchange Online messages matched by a Microsoft Purview DLP rule — by default, **messages sent to more than 25 recipients** — as CSV and HTML files, **one row per Message ID**.
+> Reports the Exchange Online messages matched by a Microsoft Purview DLP rule — by default, **messages sent to more than 25 recipients** — as CSV and HTML files, **one row per Message ID**. For the everyday commands, start with the [user guide](PurviewDlpReport-UserGuide.md).
 
 > [!IMPORTANT]
 > Files downloaded from the Internet may be blocked by Windows and fail to run. Before using this project, unblock every file in the downloaded folder:
@@ -173,11 +173,12 @@ Check without connecting | `.\Invoke-PurviewDlpReport.ps1 -Mode Status` — chec
 | `src\PurviewDlpReport.Engine.cs` | C# engine: reading, database, CSV/HTML writing |
 | `templates\Report.template.html` | Look and behaviour of the HTML report |
 | `lib\sqlite\` | SQLite libraries (see `THIRD-PARTY-NOTICES.md`) |
+| `docs\PurviewDlpReport-UserGuide.html` | The user guide — everyday commands |
 | `docs\PurviewDlpReport-Guide.html` | This guide |
 | `data\` · `reports\` · `logs\` · `bin\` | Created at run time — the package contains **no database**, the first run creates an empty one. **Back up `data\`**: it is the only history beyond 30 days. |
 
 > [!NOTE]
-> The package holds only what is needed to run. The git repository of the tool also contains this Markdown guide in `package\docs\`, `tests\` (automated tests) and `tools\` (documentation builder, package builder) — see chapters 11 to 13.
+> The package holds only what is needed to run. The git repository of the tool also contains both Markdown guides in `package\docs\`, `tests\` (automated tests) and `tools\` (documentation builder, package builder) — see chapters 11 to 13.
 
 <!-- icon: settings -->
 ## 6. Configuration
@@ -543,7 +544,7 @@ Test | Adapt *writes one row per Message ID with the business columns*.
 | Add a period ("current week"…) | `ValidateSet` of `-Range` **and** of `Resolve-DlpPeriod`, a new `switch` branch, a test in *Periods*. |
 | Change the console output | Always go through `Write-DlpStep`, `Write-DlpItem`, `Write-DlpTableRow`, `Write-DlpSummary`: they also write the log. Icons: `$script:Icons` at the top of the module. |
 | Update the SQLite libraries | nuget.org packages `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.*` (same version): `lib/net8.0` into `package\lib\sqlite`, `runtimes/win-*/native/e_sqlite3.dll` into `package\lib\sqlite\runtimes`. Delete `bin\`, run the tests, update `THIRD-PARTY-NOTICES.md`. |
-| Change this guide | Edit `package\docs\PurviewDlpReport-Guide.md` (callouts `> [!NOTE]`, blocks `cards`, `steps`, `flow`), then run `.\tools\Build-Documentation.ps1`. |
+| Change this guide | Edit `package\docs\PurviewDlpReport-Guide.md` or `package\docs\PurviewDlpReport-UserGuide.md` (callouts `> [!NOTE]`, blocks `cards`, `steps`, `flow`), then run `.\tools\Build-Documentation.ps1` — it builds both HTML files. |
 
 ### PowerShell pitfalls met during the build
 
@@ -714,7 +715,7 @@ Code | Update the code and the comments, in English.
 Version | Update the version everywhere, and `CHANGELOG.md`.
 Tests | `Invoke-Pester -Path .\tests` — all green.
 Real data | For a change of the collection or the engine: offline replay, then one live run.
-Documentation | Update this guide, then `.\tools\Build-Documentation.ps1` to regenerate the HTML.
+Documentation | Update the guides, then `.\tools\Build-Documentation.ps1` to regenerate the HTML.
 Release | `git add -A`, `git commit`, `git tag vX.Y.Z`.
 Package | `.\tools\New-DlpPackage.ps1` — copies the files needed to run into `..\package\PurviewDlpReport-X.Y.Z`, tenant values emptied, no database. Zip this folder to deliver it.
 ```
