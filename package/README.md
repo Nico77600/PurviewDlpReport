@@ -2,7 +2,7 @@
 
 A PowerShell 7 tool that collects Microsoft Purview DLP Activity Explorer events and writes CSV and HTML reports.
 
-This folder contains everything needed to run the tool: `Invoke-PurviewDlpReport.ps1`, the module and its C# engine, the configuration, the report template, the SQLite library and the guide. Tests and build tools stay outside it, in the repository.
+This folder contains everything needed to run the tool: `Invoke-PurviewDlpReport.ps1`, the module and its C# engine, the configuration, the report template, the SQLite library and both guides. Tests and build tools stay outside it, in the repository.
 
 > [!IMPORTANT]
 > Files downloaded from the Internet may be blocked by Windows. Unblock them once, from this folder:
@@ -35,7 +35,7 @@ notepad .\config\PurviewDlpReport.config.psd1      # TenantId, PolicyId, RuleId,
 | Item | Role |
 |---|---|
 | `config\` | Configuration file to fill in. |
-| `docs\` | Administrator guide, Markdown and self-contained HTML. |
+| `docs\` | User and developer guides, Markdown and self-contained HTML. |
 | `lib\` | Bundled SQLite libraries. |
 | `src\` | C# engine source, compiled on first use. |
 | `templates\` | HTML report template. |
@@ -48,7 +48,8 @@ notepad .\config\PurviewDlpReport.config.psd1      # TenantId, PolicyId, RuleId,
 
 ## Documentation
 
-- [Administrator guide](docs/PurviewDlpReport-Guide.md) - also `docs/PurviewDlpReport-Guide.html`, a single file to open locally
+- [User guide](docs/PurviewDlpReport-UserGuide.md) - also `docs/PurviewDlpReport-UserGuide.html`, a single file to open locally
+- [Developer guide](docs/PurviewDlpReport-Guide.md) - also `docs/PurviewDlpReport-Guide.html`
 
 Project page, releases and change log: https://github.com/Nico77600/PurviewDlpReport
 
