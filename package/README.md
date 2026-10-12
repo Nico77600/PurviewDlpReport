@@ -54,3 +54,10 @@ notepad .\config\PurviewDlpReport.config.psd1      # TenantId, PolicyId, RuleId,
 Project page, releases and change log: https://github.com/Nico77600/PurviewDlpReport
 
 License: [MIT](LICENSE). Third-party components: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+## Disclaimer
+
+This Script is a Personal project.
+It's provided "AS-IS". It's not an official Microsoft product so no support can be expected from Microsoft.
+
+As any scripts you must read carefully the documentation and test it first in a Test environment before any run in Production.

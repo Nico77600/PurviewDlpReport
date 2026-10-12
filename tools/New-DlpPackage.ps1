@@ -8,7 +8,7 @@
     and the licence notice of the SQLite binaries:
         Invoke-PurviewDlpReport.ps1, PurviewDlpReport.psd1, PurviewDlpReport.psm1,
         config\, src\, templates\, lib\sqlite\, docs\PurviewDlpReport-UserGuide.html,
-        docs\PurviewDlpReport-Guide.html, THIRD-PARTY-NOTICES.md
+        docs\PurviewDlpReport-Guide.html, README.md, THIRD-PARTY-NOTICES.md
     It never copies data\, reports\, logs\ or bin\: there is no database in the package, the tool
     creates an empty one at the first run.
 
@@ -57,7 +57,7 @@ if (Test-Path -LiteralPath $Destination) {
 
 # ---- Files needed at run time ---------------------------------------------------------------------------
 $files = [Collections.Generic.List[string]]::new()
-foreach ($f in 'Invoke-PurviewDlpReport.ps1', 'PurviewDlpReport.psd1', 'PurviewDlpReport.psm1', 'THIRD-PARTY-NOTICES.md',
+foreach ($f in 'Invoke-PurviewDlpReport.ps1', 'PurviewDlpReport.psd1', 'PurviewDlpReport.psm1', 'README.md', 'THIRD-PARTY-NOTICES.md',
     'src\PurviewDlpReport.Engine.cs', 'templates\Report.template.html', 'docs\PurviewDlpReport-UserGuide.html',
     'docs\PurviewDlpReport-Guide.html') { $files.Add($f) }
 Get-ChildItem -LiteralPath (Join-Path $packageRoot 'lib\sqlite') -Recurse -File | ForEach-Object { $files.Add($_.FullName.Substring($packageRoot.Length + 1)) }
