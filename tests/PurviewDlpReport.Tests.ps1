@@ -89,6 +89,51 @@ AfterAll {
     if ($script:ConfigDirectory -and (Test-Path -LiteralPath $script:ConfigDirectory)) { Remove-Item -LiteralPath $script:ConfigDirectory -Recurse -Force }
 }
 
+Describe 'Disclaimer synchronization' {
+    BeforeAll {
+        $script:DisclaimerPattern = '(?ms)^## Disclaimer\r?\n(?<Text>.*?)(?=^## |\z)'
+        $sections = [regex]::Matches((Get-Content (Join-Path $script:RepoRoot 'README.md') -Raw), $script:DisclaimerPattern)
+        if ($sections.Count -ne 1) { throw 'The root README must have exactly one Disclaimer section.' }
+        $script:Disclaimer = ($sections[0].Groups['Text'].Value -replace "`r`n", "`n").Trim()
+    }
+
+    It 'ships the complete root disclaimer in the runtime README' {
+        $sections = [regex]::Matches((Get-Content (Join-Path $script:Root 'README.md') -Raw), $script:DisclaimerPattern)
+        $sections.Count | Should -Be 1
+        ($sections[0].Groups['Text'].Value -replace "`r`n", "`n").Trim() | Should -BeExactly $script:Disclaimer
+    }
+
+    It 'includes the complete root disclaimer in the entry script help notes' {
+        $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:Root 'Invoke-PurviewDlpReport.ps1'), [ref]$null, [ref]$errors)
+        $errors | Should -BeNullOrEmpty
+        $help = $ast.GetHelpContent()
+        $help | Should -Not -BeNullOrEmpty
+        $notes = ($help.Notes -replace "`r`n", "`n" -replace '(?m)^[ \t]+', '').Trim()
+        $start = $notes.IndexOf(($script:Disclaimer -split "`n")[0], [StringComparison]::Ordinal)
+        $start | Should -BeGreaterOrEqual 0
+        $notes.Substring($start) | Should -BeExactly $script:Disclaimer
+    }
+
+    It 'ships the exact runtime README and disclaimer through the existing package builder' {
+        $destination = Join-Path ([IO.Path]::GetTempPath()) ('PurviewDlpPackageTests-' + [guid]::NewGuid().ToString('N'))
+        Test-Path -LiteralPath $destination | Should -BeFalse
+        try {
+            & (Join-Path $script:RepoRoot 'tools\New-DlpPackage.ps1') -Destination $destination | Out-Null
+            $readme = Join-Path $destination 'README.md'
+            $readme | Should -Exist
+            (Get-FileHash -LiteralPath $readme -Algorithm SHA256).Hash |
+                Should -BeExactly (Get-FileHash -LiteralPath (Join-Path $script:Root 'README.md') -Algorithm SHA256).Hash
+            $sections = [regex]::Matches((Get-Content -LiteralPath $readme -Raw), $script:DisclaimerPattern)
+            $sections.Count | Should -Be 1
+            ($sections[0].Groups['Text'].Value -replace "`r`n", "`n").Trim() | Should -BeExactly $script:Disclaimer
+        }
+        finally {
+            if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }
+        }
+    }
+}
+
 Describe 'Configuration' {
     It 'loads the delivered configuration file (tenant values filled in)' {
         $s = Import-DlpConfiguration -Path $script:ConfigPath -Root $script:Root
