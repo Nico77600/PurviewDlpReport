@@ -21,14 +21,33 @@
 
 .NOTES
     Author  : Nicolas Fabert
-    Version : 2.1.1
+    Version : 2.1.2
     History : see CHANGELOG.md
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:ToolVersion = '2.1.1'
+$script:ToolVersion = '2.1.2'
 $script:ToolRoot = $PSScriptRoot
+function Assert-DlpPackageIntegrity {
+    $verifier = Join-Path $script:ToolRoot 'Test-PackageIntegrity.ps1'
+    $cursor = [IO.Path]::GetFullPath($verifier)
+    while ($cursor) {
+        $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Package integrity: reparse point: $cursor"
+        }
+        $cursor = [IO.Path]::GetDirectoryName($cursor)
+    }
+    $signature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $verifier -ErrorAction Stop
+    if ([string]$signature.Status -cne 'Valid' -or $null -eq $signature.SignerCertificate -or
+        $signature.SignerCertificate.Thumbprint -cne '0F28E442889F17B5F4D251E8F96E7CC6E2C9C6D6' -or
+        $null -eq $signature.TimeStamperCertificate) {
+        throw 'Package integrity: verifier must have the trusted, timestamped owner signature.'
+    }
+    & $verifier -Root $script:ToolRoot
+}
+Assert-DlpPackageIntegrity
 # Prefix given to the Security & Compliance cmdlets imported by Connect-IPPSSession.
 # It avoids any clash with another Exchange/Purview session opened in the same console.
 $script:CommandPrefix = 'PdrAe'
@@ -369,7 +388,7 @@ function Import-DlpConfiguration {
             SliceHours           = Test-Int (Get-Value $c 'Collection' 'SliceHours' 24) 'Collection.SliceHours' 1 24
             SettlingHours        = Test-Int (Get-Value $c 'Collection' 'SettlingHours' 6) 'Collection.SettlingHours' 0 72
             BackfillDays         = Test-Int (Get-Value $c 'Collection' 'BackfillDays' 30) 'Collection.BackfillDays' 1 30
-            SourceRetentionDays  = Test-Int (Get-Value $c 'Collection' 'SourceRetentionDays' 30) 'Collection.SourceRetentionDays' 1 365
+            SourceRetentionDays  = Test-Int (Get-Value $c 'Collection' 'SourceRetentionDays' 30) 'Collection.SourceRetentionDays' 1 30
             RetentionWarningDays = Test-Int (Get-Value $c 'Collection' 'RetentionWarningDays' 7) 'Collection.RetentionWarningDays' 0 364
             MaxSliceRestarts     = Test-Int (Get-Value $c 'Collection' 'MaxSliceRestarts' 2) 'Collection.MaxSliceRestarts' 0 5
             MinimumSliceMinutes  = Test-Int (Get-Value $c 'Collection' 'MinimumSliceMinutes' 15) 'Collection.MinimumSliceMinutes' 1 720
@@ -392,6 +411,9 @@ function Import-DlpConfiguration {
             MaxRowsPerFile          = Test-Int (Get-Value $r 'Report' 'MaxRowsPerFile' 500000) 'Report.MaxRowsPerFile' 1000 1048575
             CsvDelimiter            = [string](Get-Value $r 'Report' 'CsvDelimiter' ';')
             Title                   = [string](Get-Value $r 'Report' 'Title' 'DLP messages with more than 25 recipients')
+            CompanyName             = [string](Get-Value $r 'Report' 'CompanyName' '')
+            ShowTenantInformation   = Test-Bool (Get-Value $r 'Report' 'ShowTenantInformation' $false) 'Report.ShowTenantInformation'
+            EnvironmentName         = [string](Get-Value $r 'Report' 'EnvironmentName' '')
             TemplatePath            = Join-Path $Root 'templates\Report.template.html'
         }
         Logging = [ordered]@{
@@ -410,11 +432,14 @@ function Import-DlpConfiguration {
         if ($settings.Tenant.Organization -notmatch '\.onmicrosoft\.com$') { $errors.Add('Tenant.Organization must be the initial domain (xxx.onmicrosoft.com) in Certificate mode.') }
     }
     if ($settings.Collection.RetentionWarningDays -ge $settings.Collection.SourceRetentionDays) { $errors.Add('Collection.RetentionWarningDays must be lower than Collection.SourceRetentionDays.') }
+    if ($settings.Collection.SettlingHours -ge ($settings.Collection.SourceRetentionDays * 24)) { $errors.Add('Collection.SettlingHours must be lower than the source retention period.') }
+    if ($settings.Storage.RetentionDays -gt 0 -and $settings.Storage.RetentionDays -lt $settings.Collection.BackfillDays) { $errors.Add('Storage.RetentionDays must be 0 or at least Collection.BackfillDays to avoid recollecting purged history.') }
     if ($settings.Report.DefaultRange -notin 'Last24Hours', 'Last7Days', 'Last30Days', 'PreviousMonth') { $errors.Add('Report.DefaultRange must be Last24Hours, Last7Days, Last30Days or PreviousMonth.') }
     if ($settings.Report.SplitBy -notin 'Rows', 'Day', 'Week') { $errors.Add("Report.SplitBy must be 'Rows', 'Day' or 'Week'.") }
     if (-not $settings.Report.Formats.Count -or @($settings.Report.Formats | Where-Object { $_ -notin 'Csv', 'Html' }).Count) { $errors.Add("Report.Formats must contain 'Csv', 'Html' or both.") }
     if ($settings.Report.CsvDelimiter -notin ';', ',', "`t", '|') { $errors.Add("Report.CsvDelimiter must be ';', ',', '|' or a tab.") }
     if (-not $settings.Report.FilePrefix -or $settings.Report.FilePrefix.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { $errors.Add('Report.FilePrefix must be a valid file name part.') }
+    if ($r.ContainsKey('Author') -or $r.ContainsKey('AuthorName')) { $errors.Add('Report author is fixed to Nicolas Fabert. Remove Report.Author / Report.AuthorName; use Report.CompanyName for company branding.') }
     try { $settings['Zone'] = Get-DlpTimeZone $settings.Report.TimeZone } catch { $errors.Add($_.Exception.Message) }
     if ($errors.Count) { throw ("Invalid configuration ($Path):`n - " + ($errors -join "`n - ")) }
     return $settings
@@ -427,12 +452,16 @@ function Import-DlpConfiguration {
 function Initialize-DlpEngine {
     <#
     .SYNOPSIS
-        Loads SQLite (lib\sqlite) and the C# engine. The engine is compiled from
-        src\PurviewDlpReport.Engine.cs into bin\ the first time, and again only when
-        the source file changes (the file name contains a hash of the source).
+        Verifies the package, then loads SQLite and compiles the authenticated C#
+        source in memory once per process. Never loads the unsigned bin cache.
     #>
     [CmdletBinding()]
     param([string]$Root = $script:ToolRoot)
+    if (-not [string]::Equals([IO.Path]::GetFullPath($Root).TrimEnd('\'),
+        [IO.Path]::GetFullPath($script:ToolRoot).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Package integrity: engine root must be the imported package root.'
+    }
+    Assert-DlpPackageIntegrity
     if ('PurviewDlpReport.DlpStore' -as [type]) { return }
     $lib = Join-Path $Root 'lib\sqlite'
     $arch = if ([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -eq 'Arm64') { 'win-arm64' } else { 'win-x64' }
@@ -445,24 +474,12 @@ function Initialize-DlpEngine {
     [SQLitePCL.Batteries_V2]::Init()
 
     $source = Join-Path $Root 'src\PurviewDlpReport.Engine.cs'
-    $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.Substring(0, 16)
-    $bin = Join-Path $Root 'bin'
-    $dll = Join-Path $bin "PurviewDlpReport.Engine.$hash.dll"
-    if (-not (Test-Path -LiteralPath $dll)) {
-        [void][IO.Directory]::CreateDirectory($bin)
-        $references = @(
+    $references = @(
             (Join-Path $lib 'Microsoft.Data.Sqlite.dll'), 'System.IO.Compression', 'System.Text.Json', 'System.Text.Encodings.Web',
             'System.Data.Common', 'System.Linq', 'System.Collections', 'System.Text.RegularExpressions', 'System.Security.Cryptography',
             'System.Runtime', 'System.Memory', 'System.ComponentModel.Primitives', 'System.ComponentModel', 'System.Transactions.Local',
             'System.Text.Encoding.Extensions', 'System.Runtime.Extensions', 'System.IO', 'System.Runtime.InteropServices', 'System.Console', 'netstandard')
-        $staging = Join-Path $bin ("compile-{0}.dll" -f [guid]::NewGuid().ToString('N'))
-        Add-Type -LiteralPath $source -ReferencedAssemblies $references -OutputAssembly $staging -OutputType Library -IgnoreWarnings -WarningAction SilentlyContinue
-        Move-Item -LiteralPath $staging -Destination $dll -Force
-        # Older compiled versions are removed when they are not in use.
-        Get-ChildItem -LiteralPath $bin -Filter 'PurviewDlpReport.Engine.*.dll' | Where-Object FullName -ne $dll |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-    }
-    if (-not ('PurviewDlpReport.DlpStore' -as [type])) { Add-Type -LiteralPath $dll }
+    Add-Type -LiteralPath $source -ReferencedAssemblies $references -IgnoreWarnings -WarningAction SilentlyContinue
 }
 
 function Open-DlpStore {
@@ -470,7 +487,13 @@ function Open-DlpStore {
     $path = $Settings.Storage.DatabasePath
     if ($ReadOnly -and -not (Test-Path -LiteralPath $path)) { throw "The database does not exist yet: $path. Run a collection first (-Mode Collect)." }
     $store = [PurviewDlpReport.DlpStore]::new($path, [bool]$ReadOnly, $script:ToolVersion)
-    $store.KeepQuarantinedRaw = [bool]$Settings.Storage.KeepQuarantinedRecords
+    try {
+        $store.ValidateTenant($Settings.Tenant.TenantId)
+        $store.KeepQuarantinedRaw = [bool]$Settings.Storage.KeepQuarantinedRecords
+    } catch {
+        $store.Dispose()
+        throw
+    }
     return $store
 }
 
@@ -627,15 +650,35 @@ function Get-DlpCollectionPlan {
 }
 
 function Get-DlpCoverage {
-    <# Share of a period present in the database (any completed collection, settled or not). #>
-    param([Parameter(Mandatory)]$Store, [Parameter(Mandatory)][long]$TargetId, [Parameter(Mandatory)][long]$StartMs, [Parameter(Mandatory)][long]$EndMs)
-    $covered = $Store.GetCoveredRanges($TargetId, 0)
-    $gaps = [PurviewDlpReport.Coverage]::Gaps($covered, $StartMs, $EndMs)
-    $missingMs = Get-DlpRangeLength $gaps
+    <# Share of a period present in the database, with optional settled coverage. #>
+    param(
+        [Parameter(Mandatory)]$Store, [Parameter(Mandatory)][long]$TargetId,
+        [Parameter(Mandatory)][long]$StartMs, [Parameter(Mandatory)][long]$EndMs,
+        [long]$SettlingMs = 0
+    )
+    $currentCovered = [Collections.Generic.List[PurviewDlpReport.TimeRange]]::new()
+    foreach ($range in @($Store.GetCoveredRanges($TargetId, 0))) {
+        $currentCovered.Add([PurviewDlpReport.TimeRange]::new([long]$range.Start, [long]$range.End))
+    }
+    $settledCovered = $currentCovered
+    if ($SettlingMs -gt 0) {
+        $settledCovered = [Collections.Generic.List[PurviewDlpReport.TimeRange]]::new()
+        foreach ($range in @($Store.GetCoveredRanges($TargetId, $SettlingMs))) {
+            $settledCovered.Add([PurviewDlpReport.TimeRange]::new([long]$range.Start, [long]$range.End))
+        }
+    }
+    $currentGaps = [PurviewDlpReport.Coverage]::Gaps($currentCovered, $StartMs, $EndMs)
+    $settledGaps = [PurviewDlpReport.Coverage]::Gaps($settledCovered, $StartMs, $EndMs)
+    $currentMissingMs = Get-DlpRangeLength $currentGaps
+    $settledMissingMs = Get-DlpRangeLength $settledGaps
     [pscustomobject]@{
-        Percent   = if ($EndMs -gt $StartMs) { [Math]::Round(100.0 * ($EndMs - $StartMs - $missingMs) / ($EndMs - $StartMs), 2) } else { 100 }
-        Gaps      = $gaps
-        MissingMs = $missingMs
+        Percent        = if ($EndMs -gt $StartMs) { [Math]::Round(100.0 * ($EndMs - $StartMs - $currentMissingMs) / ($EndMs - $StartMs), 2) } else { 100 }
+        Gaps           = $currentGaps
+        MissingMs      = $currentMissingMs
+        FinalPercent   = if ($EndMs -gt $StartMs) { [Math]::Round(100.0 * ($EndMs - $StartMs - $settledMissingMs) / ($EndMs - $StartMs), 2) } else { 100 }
+        FinalGaps      = $settledGaps
+        ProvisionalMs  = [Math]::Max(0, $settledMissingMs - $currentMissingMs)
+        Complete       = $currentMissingMs -eq 0
     }
 }
 
@@ -847,8 +890,10 @@ function Invoke-DlpCollection {
     $zone = $Settings.Zone
     $stats = [ordered]@{
         Completed = $false; Error = $null; Slices = @($Slices).Count; SlicesDone = 0; Pages = 0; Records = 0; NewEvents = 0
-        Duplicates = 0; Quarantined = 0; Conflicts = 0; WithoutCount = 0; Restarts = 0; Subdivisions = 0
-        SourceSeconds = 0.0; EngineSeconds = 0.0; Seconds = 0.0; ServiceAnnounced = 0; QuarantineReasons = @{}
+        Duplicates = 0; Quarantined = 0; Conflicts = 0; WithoutCount = 0; OutOfRange = 0; Restarts = 0; Subdivisions = 0
+        SourceSeconds = 0.0; EngineSeconds = 0.0; Seconds = 0.0; ServiceAnnounced = 0; OutOfRangeHappenedMs = [Collections.Generic.List[long]]::new(); QuarantineReasons = @{}
+        BoundaryEvents = 0; BoundaryNewEvents = 0; BoundaryDuplicates = 0; UnexpectedOutOfRange = 0
+        UnexpectedTimestampSamples = [Collections.Generic.List[object]]::new()
     }
     $pending = [Collections.Generic.LinkedList[object]]::new()
     foreach ($slice in $Slices) { [void]$pending.AddLast([pscustomobject]@{ Start = [long]$slice.Start; End = [long]$slice.End; Restart = 0 }) }
@@ -902,7 +947,19 @@ function Invoke-DlpCollection {
                     if ($result.Records -gt 0 -and -not $hashes.Add($result.Sha256)) { throw 'RepeatedPage: the service returned the same page twice.' }
                     $records += $result.Records; $new += $result.NewEvents
                     $stats.Pages++; $stats.Records += $result.Records; $stats.NewEvents += $result.NewEvents; $stats.Duplicates += $result.Duplicates
-                    $stats.Quarantined += $result.Quarantined; $stats.Conflicts += $result.Conflicts; $stats.WithoutCount += $result.WithoutCount
+                    $stats.Quarantined += $result.Quarantined; $stats.Conflicts += $result.Conflicts; $stats.WithoutCount += $result.WithoutCount; $stats.OutOfRange += $result.OutOfRange
+                    foreach ($happenedMs in $result.OutOfRangeHappenedMs) {
+                        if ($stats.OutOfRangeHappenedMs.Count -ge 10) { break }
+                        $stats.OutOfRangeHappenedMs.Add([long]$happenedMs)
+                    }
+                    $stats.BoundaryEvents += $result.BoundaryEvents
+                    $stats.BoundaryNewEvents += $result.BoundaryNewEvents
+                    $stats.BoundaryDuplicates += $result.BoundaryDuplicates
+                    $stats.UnexpectedOutOfRange += $result.UnexpectedOutOfRange
+                    foreach ($sample in $result.UnexpectedTimestampSamples) {
+                        if ($stats.UnexpectedTimestampSamples.Count -ge 10) { break }
+                        $stats.UnexpectedTimestampSamples.Add($sample)
+                    }
                     foreach ($reason in $result.QuarantineReasons.Keys) { $stats.QuarantineReasons[$reason] = [int]$stats.QuarantineReasons[$reason] + $result.QuarantineReasons[$reason] }
                     if ($null -eq $serviceTotal -and $null -ne $page.TotalResultCount) { $serviceTotal = [long]$page.TotalResultCount }
 
@@ -957,6 +1014,24 @@ function Invoke-DlpCollection {
     return [pscustomobject]$stats
 }
 
+function Write-DlpCollectionDiagnostics {
+    param([Parameter(Mandatory)]$Collection, [Parameter(Mandatory)][TimeZoneInfo]$Zone)
+    if ($Collection.BoundaryEvents) {
+        Write-DlpItem Info ("Source boundary observations: {0} event(s), {1} newly stored, {2} already in the database (no duplicate inserted)." -f $Collection.BoundaryEvents, $Collection.BoundaryNewEvents, $Collection.BoundaryDuplicates)
+        Write-DlpItem Info 'Activity Explorer uses second-level request boundaries and an inclusive end. These boundary events were retained; none were discarded. Report date filters still apply.'
+    }
+    if ($Collection.UnexpectedOutOfRange) {
+        Write-DlpItem Warn ("Unexpected timestamps: {0} event(s) outside the expected source boundaries. Events were retained, not discarded; investigate the time difference." -f $Collection.UnexpectedOutOfRange)
+        foreach ($sample in @($Collection.UnexpectedTimestampSamples | Select-Object -First 3)) {
+            Write-DlpItem Warn ('Happened {0}; requested [{1}, {2}) ({3}); {4}.' -f
+                (Format-DlpLocalTime $sample.HappenedMs $Zone 'yyyy-MM-dd HH:mm:ss.fff'),
+                (Format-DlpLocalTime $sample.StartMs $Zone 'yyyy-MM-dd HH:mm:ss.fff'),
+                (Format-DlpLocalTime $sample.EndMs $Zone 'yyyy-MM-dd HH:mm:ss.fff'),
+                $Zone.Id, $(if ($sample.AlreadyPresent) { 'already stored' } else { 'newly stored' }))
+        }
+    }
+}
+
 #endregion
 
 #region 7. Report --------------------------------------------------------------------------------
@@ -987,9 +1062,15 @@ function New-DlpReport {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Store, [Parameter(Mandatory)][long]$TargetId, [Parameter(Mandatory)]$Settings,
-        [Parameter(Mandatory)]$Period, [Parameter(Mandatory)]$Coverage
+        [Parameter(Mandatory)]$Period, [Parameter(Mandatory)]$Coverage,
+        [switch]$CollectionFailed
     )
+    Assert-DlpPackageIntegrity
     $r = $Settings.Report
+    if (-not [string]::Equals([IO.Path]::GetFullPath($r.TemplatePath),
+        [IO.Path]::Combine($script:ToolRoot, 'templates\Report.template.html'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Package integrity: report template must belong to the authenticated package.'
+    }
     $zone = $Settings.Zone
     [void][IO.Directory]::CreateDirectory($r.OutputPath)
     $name = '{0:yyyy-MM-dd_HHmmss}_{1}' -f (Get-Date), $Period.Range
@@ -1016,10 +1097,45 @@ function New-DlpReport {
     $request.ToolVersion = $script:ToolVersion
     $request.RangeName = $Period.Range
     $request.CoveragePercent = $Coverage.Percent
-    if ($Coverage.Percent -lt 100) {
-        $request.CoverageNote = 'no data collected for ' + ((@($Coverage.Gaps) | Select-Object -First 3 | ForEach-Object { Format-DlpRange $_.Start $_.End $zone }) -join ', ') + $(if (@($Coverage.Gaps).Count -gt 3) { ', ...' } else { '' })
+    $request.MissingMs = $Coverage.MissingMs
+    $request.ProvisionalMs = $Coverage.ProvisionalMs
+    $request.SettledCoveragePercent = $Coverage.FinalPercent
+    $request.CollectionSucceeded = -not $CollectionFailed
+    $request.CompanyName = $r.CompanyName
+    if ($r.ShowTenantInformation) {
+        $boundTenant = $Store.GetMetadata('tenant_id')
+        $request.TenantId = if ($boundTenant) { $boundTenant } else { $Settings.Tenant.TenantId }
+        $request.TenantOrganization = $Settings.Tenant.Organization
+        $request.EnvironmentName = $r.EnvironmentName
+        $request.TenantIdentitySource = if ($boundTenant) { 'Authenticated collection session' } else { 'Configuration only; no authenticated database binding yet' }
+        $request.LegacyTenantHistoryUnverified = -not $boundTenant -or $Store.GetMetadata('legacy_tenant_history_unverified') -eq 'true'
     }
+    $coverageNotes = [Collections.Generic.List[string]]::new()
+    if ($Coverage.MissingMs -gt 0) {
+        $coverageNotes.Add('INCOMPLETE: no completed collection for ' + ((@($Coverage.Gaps) | Select-Object -First 3 | ForEach-Object { Format-DlpRange $_.Start $_.End $zone }) -join ', ') + $(if (@($Coverage.Gaps).Count -gt 3) { ', ...' } else { '' }) + " ($($Coverage.MissingMs) ms missing; the displayed percentage is rounded).")
+    }
+    if ($Coverage.ProvisionalMs -gt 0) {
+        $coverageNotes.Add(('{0}% is settled after the {1}-hour settling window; recent data is provisional.' -f $Coverage.FinalPercent, $Settings.Collection.SettlingHours))
+    }
+    if ($CollectionFailed) { $coverageNotes.Add('INCOMPLETE: the collection or refresh did not finish. Run again to continue.') }
+    if ($coverageNotes.Count) { $request.CoverageNote = $coverageNotes -join ' ' }
     $result = $Store.WriteReport($TargetId, $request)
+    $metadata = [ordered]@{
+        ToolVersion = $script:ToolVersion; Author = 'Nicolas Fabert'; CompanyName = $r.CompanyName
+        TimeZone = $r.TimeZone
+        PeriodStartUtc = [DateTimeOffset]::FromUnixTimeMilliseconds($Period.StartMs).ToString('o')
+        PeriodEndUtc = [DateTimeOffset]::FromUnixTimeMilliseconds($Period.EndMs).ToString('o')
+        CoverageComplete = $request.CoverageComplete; CoveragePercent = $Coverage.Percent
+        MissingMs = $Coverage.MissingMs; SettledCoveragePercent = $Coverage.FinalPercent; ProvisionalMs = $Coverage.ProvisionalMs
+        CollectionSucceeded = $request.CollectionSucceeded
+        Files = @($result.Files | ForEach-Object { Split-Path $_.Path -Leaf })
+    }
+    if ($r.ShowTenantInformation) {
+        $metadata.TenantId = $request.TenantId; $metadata.TenantOrganization = $request.TenantOrganization
+        $metadata.EnvironmentName = $request.EnvironmentName; $metadata.TenantIdentitySource = $request.TenantIdentitySource
+        $metadata.LegacyTenantHistoryUnverified = $request.LegacyTenantHistoryUnverified
+    }
+    $metadata | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $staging 'report-metadata.json') -Encoding utf8
     Move-DlpDirectory -Source $staging -Destination $final
     foreach ($file in $result.Files) { $file.Path = Join-Path $final (Split-Path $file.Path -Leaf) }
     [pscustomobject]@{ Directory = $final; Result = $result }
@@ -1036,15 +1152,18 @@ function Show-DlpStatus {
         date, messages, a coverage bar and the state (complete, provisional, missing, lost).
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Store, [Parameter(Mandatory)][long]$TargetId, [Parameter(Mandatory)]$Settings, [int]$Days = 35)
+    param([Parameter(Mandatory)]$Store, [Parameter(Mandatory)][long]$TargetId, [Parameter(Mandatory)]$Settings, [int]$Days = 35,
+        [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
     $zone = $Settings.Zone; $cfg = $Settings.Collection; $K = $script:C; $dot = [char]0x00B7
-    $now = [DateTimeOffset]::UtcNow
+    $now = $Now
     $nowMs = $now.ToUnixTimeMilliseconds()
     $s = $Store.GetStatistics($TargetId)
     Write-DlpItem Info ('{0}  ({1})' -f $Store.DatabasePath, (Format-DlpBytes $s.FileBytes)) -Icon Database
     Write-DlpItem Info ('{0} events {4} {1} messages {4} {2} executions {4} {3} quarantined record(s)' -f (Format-DlpNumber $s.Events), (Format-DlpNumber $s.Messages), (Format-DlpNumber $s.Runs), (Format-DlpNumber $s.Quarantined), $dot) -Icon Chart
     if ($null -eq $s.FirstCoveredMs) { Write-DlpItem Warn 'Nothing has been collected yet. Run: .\Invoke-PurviewDlpReport.ps1 -Mode Collect'; return }
     Write-DlpItem Info ('History {0}   {1} last collection {2}' -f (Format-DlpRange $s.FirstCoveredMs $s.LastCoveredMs $zone), $dot, (Format-DlpLocalTime $s.LastSuccessfulCollectionMs $zone 'yyyy-MM-dd HH:mm:ss')) -Icon Calendar
+    Write-DlpItem Info ("Read-only snapshot at {0} ({1}). Coverage measures queried time, not collection progress or a percentage of events received." -f (Format-DlpLocalTime $nowMs $zone 'yyyy-MM-dd HH:mm:ss'), $Settings.Report.TimeZone)
+    Write-DlpItem Info 'Past days use the full local day; today uses midnight to this snapshot. Without another collection, today''s percentage can decrease as time passes.'
     Write-Host ''
     $today = [TimeZoneInfo]::ConvertTime($now, $zone).DateTime.Date
     $first = $today.AddDays( - ($Days - 1))
@@ -1060,7 +1179,14 @@ function Show-DlpStatus {
         $length = [Math]::Max(1, [Math]::Min($d.EndMs, $nowMs) - $d.StartMs)
         $percent = [int][Math]::Min(100, [Math]::Floor(100.0 * $d.CoveredMs / $length))
         # State, status icon and colour of the day.
-        if ($d.LocalDate -eq $today) { $state = if ($percent -ge 100) { 'Today, provisional' } else { 'Today, collection in progress' }; $status = 'Info' }
+        if ($d.LocalDate -eq $today) {
+            $todayCoverage = Get-DlpCoverage -Store $Store -TargetId $TargetId -StartMs $d.StartMs -EndMs $nowMs -SettlingMs ([long]$cfg.SettlingHours * 3600000)
+            $percent = [int][Math]::Floor(100.0 * ($length - $todayCoverage.MissingMs) / $length)
+            $state = if ($todayCoverage.MissingMs -eq 0) {
+                if ($todayCoverage.ProvisionalMs -gt 0) { 'Today covered to snapshot; recent data provisional' } else { 'Today covered to snapshot' }
+            } else { 'Today partially covered; run -Mode Collect' }
+            $status = if ($todayCoverage.MissingMs -eq 0) { 'Info' } else { 'Warn' }
+        }
         elseif ($percent -ge 100 -and $d.FinalCoveredMs -ge ($d.EndMs - $d.StartMs)) { $state = 'Complete'; $status = 'Ok' }
         elseif ($percent -ge 100) { $state = 'Complete, refreshed at next run'; $status = 'Ok' }
         elseif ($d.EndMs -le $sourceStart) { $state = if ($percent -gt 0) { 'Partial, rest no longer collectable' } else { 'Missing, no longer collectable' }; $status = 'Fail' }
@@ -1077,6 +1203,9 @@ function Show-DlpStatus {
         $messages = if ($d.Messages) { $K.Bold + (Format-DlpNumber $d.Messages).PadLeft(10) + $K.Reset } else { $K.Dim + '0'.PadLeft(10) + $K.Reset }
         Write-Host ('      {0}{1}{2}{3,-15} {4}   {5} {6,4}%  {0}{7}{2}' -f $color, (Get-DlpIcon $status), $K.Reset, $day, $messages, $bar, $percent, $state)
         Write-DlpLog 'INFO' ("Status {0}: {1} messages, {2} events, {3}% collected, {4}" -f $d.LocalDate.ToString('yyyy-MM-dd'), $d.Messages, $d.Events, $percent, $state)
+        if ($d.LocalDate -eq $today -and $todayCoverage.MissingMs -gt 0) {
+            Write-DlpItem Warn ('Not yet covered: {0}. This does not mean stored events were lost.' -f ((@($todayCoverage.Gaps) | Select-Object -First 3 | ForEach-Object { Format-DlpRange $_.Start $_.End $zone }) -join ', '))
+        }
     }
 }
 function Invoke-DlpRetention {
@@ -1119,3 +1248,180 @@ function Exit-DlpLock {
 }
 
 #endregion
+
+# SIG # Begin signature block
+# MIIghQYJKoZIhvcNAQcCoIIgdjCCIHICAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCArk4OjRZdwh8SM
+# pJ+hUJ5pPIod76/anhS/e1GOJ43kT6CCDW8wggZyMIIEWqADAgECAghkM1HTxzif
+# CDANBgkqhkiG9w0BAQsFADB8MQswCQYDVQQGEwJVUzEOMAwGA1UECAwFVGV4YXMx
+# EDAOBgNVBAcMB0hvdXN0b24xGDAWBgNVBAoMD1NTTCBDb3Jwb3JhdGlvbjExMC8G
+# A1UEAwwoU1NMLmNvbSBSb290IENlcnRpZmljYXRpb24gQXV0aG9yaXR5IFJTQTAe
+# Fw0xNjA2MjQyMDQ0MzBaFw0zMTA2MjQyMDQ0MzBaMHgxCzAJBgNVBAYTAlVTMQ4w
+# DAYDVQQIDAVUZXhhczEQMA4GA1UEBwwHSG91c3RvbjERMA8GA1UECgwIU1NMIENv
+# cnAxNDAyBgNVBAMMK1NTTC5jb20gQ29kZSBTaWduaW5nIEludGVybWVkaWF0ZSBD
+# QSBSU0EgUjEwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQCfgxNzqrDG
+# bSHL24t6h3TQcdyOl3Ka5LuINLTdgAPGL0WkdJq/Hg9Q6p5tePOf+lEmqT2d0bKU
+# Vz77OYkbkStW72fL5gvjDjmMxjX0jD3dJekBrBdCfVgWQNz51ShEHZVkMGE6ZPKX
+# 13NMfXsjAm3zdetVPW+qLcSvvnSsXf5qtvzqXHnpD0OctVIFD+8+sbGP0EmtpuNC
+# GVQ/8y8Ooct8/hP5IznaJRy4PgBKOm8yMDdkHseudQfYVdIYyQ6KvKNc8HwKp4WB
+# wg6vj5lc02AlvINaaRwlE81y9eucgJvcLGfE3ckJmNVz68Qho+Uyjj4vUpjGYDdk
+# jLJvSlRyGMwnh/rNdaJjIUy1PWT9K6abVa8mTGC0uVz+q0O9rdATZlAfC9KJpv/X
+# gAbxwxECMzNhF/dWH44vO2jnFfF3VkopngPawismYTJboFblSSmNNqf1x1KiVgMg
+# Lzh4gL32Bq5BNMuURb2bx4kYHwu6/6muakCZE93vUN8BuvIE1tAx3zQ4XldbyDge
+# VtSsSKbt//m4wTvtwiS+RGCnd83VPZhZtEPqqmB9zcLlL/Hr9dQg1Zc0bl0EawUR
+# 0tOSjAknRO1PNTFGfnQZBWLsiePqI3CY5NEv1IoTGEaTZeVYc9NMPSd6Ij/D+KNV
+# t/nmh4LsRR7Fbjp8sU65q2j3m2PVkUG8qQIDAQABo4H7MIH4MA8GA1UdEwEB/wQF
+# MAMBAf8wHwYDVR0jBBgwFoAU3QQJB6L1en1SUxKSle44gCUNplkwMAYIKwYBBQUH
+# AQEEJDAiMCAGCCsGAQUFBzABhhRodHRwOi8vb2NzcHMuc3NsLmNvbTARBgNVHSAE
+# CjAIMAYGBFUdIAAwEwYDVR0lBAwwCgYIKwYBBQUHAwMwOwYDVR0fBDQwMjAwoC6g
+# LIYqaHR0cDovL2NybHMuc3NsLmNvbS9zc2wuY29tLXJzYS1Sb290Q0EuY3JsMB0G
+# A1UdDgQWBBRUwv4QlQCTzWr158DX2bJLuI8M4zAOBgNVHQ8BAf8EBAMCAYYwDQYJ
+# KoZIhvcNAQELBQADggIBAPUPJodwr5miyvXWyfCNZj05gtOII9iCv49UhCe204MH
+# 154niU2EjlTRIO5gQ9tXQjzHsJX2vszqoz2OTwbGK1mGf+tzG8rlQCbgPW/M9r1x
+# xs19DiBAOdYF0q+UCL9/wlG3K7V7gyHwY9rlnOFpLnUdTsthHvWlM98CnRXZ7WmT
+# V7pGRS6AvGW+5xI+3kf/kJwQrfZWsqTU+tb8LryXIbN2g9KR+gZQ0bGAKID+260P
+# Z+34fdzZcFt6umi1s0pmF4/n8OdX3Wn+vF7h1YyfE7uVmhX7eSuF1W0+Z0duGwdc
+# +1RFDxYRLhHDsLy1bhwzV5Qe/kI0Ro4xUE7bM1eV+jjk5hLbq1guRbfZIsr0WkdJ
+# LCjoT4xCPGRo6eZDrBmRqccTgl/8cQo3t51Qezxd96JSgjXktefTCm9r/o35pNfV
+# HUvnfWII+NnXrJlJ27WEQRQu9i5gl1NLmv7xiHp0up516eDap8nMLDt7TAp4z5T3
+# NmC2gzyKVMtODWgqlBF1JhTqIDfM63kXdlV4cW3iSTgzN9vkbFnHI2LmvM4uVEv9
+# XgMqyN0eS3FE0HU+MWJliymm7STheh2ENH+kF3y0rH0/NVjLw78a3Z9UVm1F5VPz
+# iIorMaPKPlDRADTsJwjDZ8Zc6Gi/zy4WZbg8Zv87spWrmo2dzJTw7XhQf+xkR6Od
+# MIIG9TCCBN2gAwIBAgIQBof4ljXihJpmCqqt2mhAWzANBgkqhkiG9w0BAQsFADB4
+# MQswCQYDVQQGEwJVUzEOMAwGA1UECAwFVGV4YXMxEDAOBgNVBAcMB0hvdXN0b24x
+# ETAPBgNVBAoMCFNTTCBDb3JwMTQwMgYDVQQDDCtTU0wuY29tIENvZGUgU2lnbmlu
+# ZyBJbnRlcm1lZGlhdGUgQ0EgUlNBIFIxMB4XDTI2MTAxMzAyNDgwMloXDTI3MTAx
+# MzAyNDgwMlowXDELMAkGA1UEBhMCRlIxGzAZBgNVBAcMEkNoYW50ZWxvdXAtRW4t
+# QnJpZTEXMBUGA1UECgwOTmljb2xhcyBGYWJlcnQxFzAVBgNVBAMMDk5pY29sYXMg
+# RmFiZXJ0MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAsg6CT0mFQ4jB
+# V2plIS4uWFSoVqRHd82Y7XYZ4CUTe/7nPBRUlXXdKTZMMHzGgiG8dEXNE8K1Xe90
+# Dgl/FnorzAFlrNWSwf6t27UAUw9xkqtRDVVpVgpixpWkAwjcQeLG+YMqBkGbFi35
+# TGvS23lPFWvLp4DxARrv15MtZ/NjNTCAAGUlMP2hFVBknEmrnYjEGyeJ93sl20RS
+# WXQQLNqlenBdkGCrQW4XjHtRjJAEqAC68hN6nWevopSQ8CLUV7A1RFfHFarDrzrL
+# zr0/NjIdSyIfM9hShln31NDrktB6Ups2XIyrtPDNB7fjkW4jpLlOqQGfYKsU9ErE
+# 4SnFsh0yOOjitegyh1RvZ9wH++3DF4CmJfTli5l/gEIm8xCCryxI+K5EogW3wu1y
+# u8NT2hcvHjdh7OpRyPyFAuLZ8MfX7kPAJpnuCeOuktzY/20eVD8bDglj+4zgqzsn
+# cR/t6T/7w1/HxpRyrVoKvEyRx+mphYh5jMdEa0BjxOL0vAJpdGZSfXGmPm/yPqRn
+# 5STTkMtzkVQXPbcvgKM0luzFcQKPHk3qdHLEXa8gf93ktYDbLE5Wd2UHrXz3SZxN
+# URHPdIXCr1qgrqQve7041kMpzrkDI5DnG2lvRG4108gp02bHG0muKyZlDdCOra7h
+# Zonu2nO79sFallruzzNi0o994PoWksUCAwEAAaOCAZUwggGRMAwGA1UdEwEB/wQC
+# MAAwHwYDVR0jBBgwFoAUVML+EJUAk81q9efA19myS7iPDOMwegYIKwYBBQUHAQEE
+# bjBsMEgGCCsGAQUFBzAChjxodHRwOi8vY2VydC5zc2wuY29tL1NTTGNvbS1TdWJD
+# QS1Db2RlU2lnbmluZy1SU0EtNDA5Ni1SMS5jZXIwIAYIKwYBBQUHMAGGFGh0dHA6
+# Ly9vY3Nwcy5zc2wuY29tMFEGA1UdIARKMEgwCAYGZ4EMAQQBMDwGDCsGAQQBgqkw
+# AQMDATAsMCoGCCsGAQUFBwIBFh5odHRwczovL3d3dy5zc2wuY29tL3JlcG9zaXRv
+# cnkwEwYDVR0lBAwwCgYIKwYBBQUHAwMwTQYDVR0fBEYwRDBCoECgPoY8aHR0cDov
+# L2NybHMuc3NsLmNvbS9TU0xjb20tU3ViQ0EtQ29kZVNpZ25pbmctUlNBLTQwOTYt
+# UjEuY3JsMB0GA1UdDgQWBBRoUx3630l9wA1fUpkKkw2GUIxl/jAOBgNVHQ8BAf8E
+# BAMCB4AwDQYJKoZIhvcNAQELBQADggIBAE3oj6cNuwlDToi1BwjgsA5djfRN4DIi
+# BYDFZIRYaIRe/rEdnItz3aqQQdFuwXnJA/MQEmi2WAGek8GeZF+R41s8FbcDxBUE
+# BoSt98TuBE+0xgxQWDiPhhXaX1Aw9V0GF4ZnlfCSw1eu2KiASaKn7Bo0PLbEAXff
+# vftRXof/kyqtw8iID6I4Rhrf5DI3WVZQodakUUmWnbnziWvEZOWbNOfzwP+7BwEt
+# 7jQANfbmEfb4p75rfy5dQVwniTDSvdo6xkrbe1Cr93GS7cJta18IG5CoIVUmdK+s
+# W38B1sLuy8Mi0MstMXV3004yaRuzLdNaAM0f9WAFerxemiQC0kdmA44/lWV3lVkM
+# WJSwkHBkkSg8Eh0hxcGzTH2xmtDhLJHNNLRwkI9u2Ur+HbLCt50oBgSV8BcCs/1i
+# qi884iC/yuX+HIv9YgTUNZ8c4lLaq4VuliJpXLu2buHIsTkO0v0+5oCM91zjTVZm
+# ULeH38N0Vr83psiJVuBSxQyt5nRVrpYz7FACq5gtXELkyViq/rGOlJKaRrgQ6WWq
+# eoIXqKhVFAdP/jAEm2M8ezoVYsUgPyKY2OcuecV9coulAcxUIUydx6qYiOfsGj5u
+# Dy7l4aYjvB771wkUMzUQwxzcDYXJtMMTaWRe6n9EemR67jc73u5CJyFg3PfA5WR1
+# wZislcdCZuS6MYISbDCCEmgCAQEwgYwweDELMAkGA1UEBhMCVVMxDjAMBgNVBAgM
+# BVRleGFzMRAwDgYDVQQHDAdIb3VzdG9uMREwDwYDVQQKDAhTU0wgQ29ycDE0MDIG
+# A1UEAwwrU1NMLmNvbSBDb2RlIFNpZ25pbmcgSW50ZXJtZWRpYXRlIENBIFJTQSBS
+# MQIQBof4ljXihJpmCqqt2mhAWzANBglghkgBZQMEAgEFAKCBhDAYBgorBgEEAYI3
+# AgEMMQowCKACgAChAoAAMBkGCSqGSIb3DQEJAzEMBgorBgEEAYI3AgEEMBwGCisG
+# AQQBgjcCAQsxDjAMBgorBgEEAYI3AgEVMC8GCSqGSIb3DQEJBDEiBCCWg0fYeWij
+# bpCpWfGlmvWMT/2Hu1iwWcjUFGyc/LAaujANBgkqhkiG9w0BAQEFAASCAgAD0nHd
+# 2oMVVubxdIZ4v02ClMW83v5RRxt+3xpoLSpiOp52LqM7C9l9+fU68NQsvKAq2sP9
+# zElIiY2keXB79zHXS+mwElq4cPSOxf/cOSXyxLTaprZgeO4ZzAug5XlK6B4haJ1I
+# ro7Lz/qOkUaxiTdobx7Ax+QBHBoTnumvM6hpcnbLFjOxh6GapshA/PqmzHktiAdu
+# FQZmly1F5B2Rp1mihiYAlkbGpnCYYU5hkYjNekUcxR6ua0yfBEMVnvcdJQDnALyX
+# hwpWqZOs8Lp84u7X3t2q5ssp3gZ3xj5GKKX16RdLRRU4SFlU0n59kUdc9oWSmcUx
+# 3hetUbq80A8WZrEr6BClpbEJ3RbE9WEh9rG1XnH9KirOagizfc4zOqHLwyB+JpVy
+# hr+1j3aUX9ilSmcJRyVv5JYscGfVeejNVMCc9v2NUNJ69PLhuNIn9mRVcThJL2Ni
+# eEUdNPVw3O4LQ5I5FD2pKQ2f9q/nM8kJKGq/DoWNik+Q+FsTyAhLN33lWX/VCCF2
+# bPRb9/yUR+kAvX+O5eL6uJGdckzR8SH/80qJR+2nSQsK8mNJbr4VkIqOavNPH2Dh
+# +AtGUF5vZK1qAz5f2oCR7mx/G2snoSw29P7/3dSsAuqKCpBWofvr1p5Uh/LPg/V2
+# Go2vKV0f1N45A7BFw/HQvgNlLdmu3DccQuAOAqGCDykwgg8lBgorBgEEAYI3AwMB
+# MYIPFTCCDxEGCSqGSIb3DQEHAqCCDwIwgg7+AgEDMQ0wCwYJYIZIAWUDBAIBMIGJ
+# BgsqhkiG9w0BCRABBKB6BHgwdgIBAQYMKwYBBAGCqTABAwYBMDEwDQYJYIZIAWUD
+# BAIBBQAEIGcZ3XuZxcYXBy7unwvQ78j2gIHW/yunXORrW/7DsZlXAggZTVxi6CVD
+# whgPMjAyNjEwMTMxMTQyNTJaMAMCAQECEEtdHfsDOiBRDvmOhGHhT6mgggwAMIIE
+# /DCCAuSgAwIBAgIQH2sWYtIuG2xd8cDBoGAOODANBgkqhkiG9w0BAQsFADBzMQsw
+# CQYDVQQGEwJVUzEOMAwGA1UECAwFVGV4YXMxEDAOBgNVBAcMB0hvdXN0b24xETAP
+# BgNVBAoMCFNTTCBDb3JwMS8wLQYDVQQDDCZTU0wuY29tIFRpbWVzdGFtcGluZyBJ
+# c3N1aW5nIFJTQSBDQSBSMTAeFw0yNTAyMTgxNjMyMDJaFw0zNDExMTIxODUwMDVa
+# MG4xCzAJBgNVBAYTAlVTMQ4wDAYDVQQIDAVUZXhhczEQMA4GA1UEBwwHSG91c3Rv
+# bjERMA8GA1UECgwIU1NMIENvcnAxKjAoBgNVBAMMIVNTTC5jb20gVGltZXN0YW1w
+# aW5nIFVuaXQgMjAyNSBFMTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABBv7UVHH
+# b+ZVluxPXlfE3M6tg0Xnq8dic+O3vPOCRpalUM1vO9A+GRzSVVjyygHhYrBw62XL
+# Fh1kv7e+yRd/aTajggFaMIIBVjAfBgNVHSMEGDAWgBQMnRAljpqnG5mHQ88IfuG9
+# gZD0zzBRBggrBgEFBQcBAQRFMEMwQQYIKwYBBQUHMAKGNWh0dHA6Ly9jZXJ0LnNz
+# bC5jb20vU1NMLmNvbS10aW1lU3RhbXBpbmctSS1SU0EtUjEuY2VyMFEGA1UdIARK
+# MEgwPAYMKwYBBAGCqTABAwYBMCwwKgYIKwYBBQUHAgEWHmh0dHBzOi8vd3d3LnNz
+# bC5jb20vcmVwb3NpdG9yeTAIBgZngQwBBAIwFgYDVR0lAQH/BAwwCgYIKwYBBQUH
+# AwgwRgYDVR0fBD8wPTA7oDmgN4Y1aHR0cDovL2NybHMuc3NsLmNvbS9TU0wuY29t
+# LXRpbWVTdGFtcGluZy1JLVJTQS1SMS5jcmwwHQYDVR0OBBYEFM582cAEgMUkEGoJ
+# 6hyrJT0R/ajSMA4GA1UdDwEB/wQEAwIHgDANBgkqhkiG9w0BAQsFAAOCAgEAgHN1
+# JIW9ZlNip07FfY9r1LJwLKTl1h/y9r1BjDgHMEz7U7J7mAy32JxA1KLyjCCJqNku
+# RfhDHGFEfZtjTOru7AQMDSDiUDvCCc3jaz5py9jGvwIe5npkLbXqXhA+SqCzG719
+# USigwhHkYr7v8NiXoaY0Xu03p0BiZZreZlpngmGB9+86N94FqIFx2I5Z5iuu7d4j
+# 7aAOZBNxfU9jFDIIGDtWfWeCpF0Q8rLE/3DHDlzJKs5Il3i/VoOl7rTU938oSrxM
+# www6GDBlKX8rGHxvkjgIb9MXkVglJSDHsNAZDeCS/inaxKHA+ChuB8K4OxIxa6k1
+# e+eHBypakAY3wuN7w7PlPmhN6k5IdqZn3HZHs2VjoR841Z9wmVPFdGDdkBZ7XOmb
+# 5OZUaKufsvtER0VbY2DkzaqAaItt1kc+I+FUz7PiVz2PUzpegkftRRxvrPyIL08b
+# lJTnbMQ0XrqDN0rEfuTLv4XhhnKyJaXhxCUdjO/cRumMzZ35QTUMItBWy1xGp0iy
+# oFVnAya2pPsVMuAI+sy1zxlOS9l5iSxvKJ8gpnpOgjqYTa7u1eyZo+4JlcGoiiR1
+# 7LthMTrF1q62tO5xOpI8txUZ6gtKGtkJV6wdj+vZLcwKZ2M93GqVpOo6UBlGjx1s
+# KsVZ7AIUzJZli4NJ0M2KYcrfNnlebkYKpDnSqWwwggb8MIIE5KADAgECAhBtUhhw
+# h+gjTYVgANCAj5NWMA0GCSqGSIb3DQEBCwUAMHwxCzAJBgNVBAYTAlVTMQ4wDAYD
+# VQQIDAVUZXhhczEQMA4GA1UEBwwHSG91c3RvbjEYMBYGA1UECgwPU1NMIENvcnBv
+# cmF0aW9uMTEwLwYDVQQDDChTU0wuY29tIFJvb3QgQ2VydGlmaWNhdGlvbiBBdXRo
+# b3JpdHkgUlNBMB4XDTE5MTExMzE4NTAwNVoXDTM0MTExMjE4NTAwNVowczELMAkG
+# A1UEBhMCVVMxDjAMBgNVBAgMBVRleGFzMRAwDgYDVQQHDAdIb3VzdG9uMREwDwYD
+# VQQKDAhTU0wgQ29ycDEvMC0GA1UEAwwmU1NMLmNvbSBUaW1lc3RhbXBpbmcgSXNz
+# dWluZyBSU0EgQ0EgUjEwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQCu
+# URAT0vk8IKAghd7JUBxkyeH9xek0/wp/MUjoclrFXqhh/fGH91Fc+7fm0MHCE7A+
+# wmOiqBj9ODrJAYGq3rm33jCnHSsCBNWAQYyoauLq8IjqsS1JlXL29qDNMMdwZ8UN
+# zQS7vWZMDJ40JSGNphMGTIA2qn2bohGtgRc4p1395ESypUOaGvJ3t0FNL3BuKmb6
+# YctMcQUF2sqooMzd89h0E6ujdvBDo6ZwNnWoxj7YmfWjSXg33A5GuY9ym4QZM5OE
+# Vgo8ebz/B+gyhyCLNNhh4Mb/4xvCTCMVmNYrBviGgdPZYrym8Zb84TQCmSuX0JlL
+# La6WK1aO6qlwISbb9bVGh866ekKblC/XRP20gAu1CjvcYciUgNTrGFg8f8AJgQPO
+# Cc1/CCdaJSYwhJpSdheKOnQgESgNmYZPhFOC6IKaMAUXk5U1tjTcFCgFvvArXtK4
+# azAWUOO1Y3fdldIBL6LjkzLUCYJNkFXqhsBVcPMuB0nUDWvLJfPimstjJ8lF4S6E
+# CxWnlWi7OElVwTnt1GtRqeY9ydvvGLntU+FecK7DbqHDUd366UreMkSBtzevAc9a
+# qoZPnjVMjvFqV1pYOjzmTiVHZtAc80bAfFe5LLfJzPI6DntNyqobpwTevQpHqPDN
+# 9qqNO83r3kaw8A9j+HZiSw2AX5cGdQP0kG0vhzfgBwIDAQABo4IBgTCCAX0wEgYD
+# VR0TAQH/BAgwBgEB/wIBADAfBgNVHSMEGDAWgBTdBAkHovV6fVJTEpKV7jiAJQ2m
+# WTCBgwYIKwYBBQUHAQEEdzB1MFEGCCsGAQUFBzAChkVodHRwOi8vd3d3LnNzbC5j
+# b20vcmVwb3NpdG9yeS9TU0xjb21Sb290Q2VydGlmaWNhdGlvbkF1dGhvcml0eVJT
+# QS5jcnQwIAYIKwYBBQUHMAGGFGh0dHA6Ly9vY3Nwcy5zc2wuY29tMD8GA1UdIAQ4
+# MDYwNAYEVR0gADAsMCoGCCsGAQUFBwIBFh5odHRwczovL3d3dy5zc2wuY29tL3Jl
+# cG9zaXRvcnkwEwYDVR0lBAwwCgYIKwYBBQUHAwgwOwYDVR0fBDQwMjAwoC6gLIYq
+# aHR0cDovL2NybHMuc3NsLmNvbS9zc2wuY29tLXJzYS1Sb290Q0EuY3JsMB0GA1Ud
+# DgQWBBQMnRAljpqnG5mHQ88IfuG9gZD0zzAOBgNVHQ8BAf8EBAMCAYYwDQYJKoZI
+# hvcNAQELBQADggIBAJIZdQ2mWkLPGQfZ8vyU+sCb8BXpRJZaL3Ez3VDlE3uZk3cP
+# xPtybVfLuqaci0W6SB22JTMttCiQMnIVOsXWnIuAbD/aFTcUkTLBI3xys+wEajzX
+# aXJYWACDS47BRjDtYlDW14gLJxf8W6DQoH3jHDGGy8kGJFOlDKG7/YrK7UGfHtBA
+# EDVe6lyZ+FtCsrk7dD/IiL/+Q3Q6SFASJLQ2XI89ihFugdYL77CiDNXrI2MFspQG
+# swXEAGpHuaQDTHUp/LdR3TyrIsLlnzoLskUGswF/KF8+kpWUiKJNC4rPWtNrxlbX
+# YRGgdEdx8SMjUTDClldcrknlFxbqHsVmr9xkT2QtFmG+dEq1v5fsIK0vHaHrWjMM
+# maJ9i+4qGJSD0stYfQ6v0PddT7EpGxGd867Ada6FZyHwbuQSadMb0K0P0OC2r7rw
+# qBUe0BaMqTa6LWzWItgBjGcObXeMxmbQqlEz2YtAcErkZvh0WABDDE4U8GyV/32F
+# daAvJgTfe9MiL2nSBioYe/g5mHUSWAay/Ip1RQmQCvmF9sNfqlhJwkjy/1U1ibUk
+# TIUBX3HgymyQvqQTZLLys6pL2tCdWcjI9YuLw30rgZm8+K387L7ycUvqrmQ3ZJlu
+# jHl3r1hgV76s3WwMPgKk1bAEFMj+rRXimSC+Ev30hXZdqyMdl/il5Ksd0vhGMYIC
+# WDCCAlQCAQEwgYcwczELMAkGA1UEBhMCVVMxDjAMBgNVBAgMBVRleGFzMRAwDgYD
+# VQQHDAdIb3VzdG9uMREwDwYDVQQKDAhTU0wgQ29ycDEvMC0GA1UEAwwmU1NMLmNv
+# bSBUaW1lc3RhbXBpbmcgSXNzdWluZyBSU0EgQ0EgUjECEB9rFmLSLhtsXfHAwaBg
+# DjgwCwYJYIZIAWUDBAIBoIIBYTAaBgkqhkiG9w0BCQMxDQYLKoZIhvcNAQkQAQQw
+# HAYJKoZIhvcNAQkFMQ8XDTI2MTAxMzExNDI1MlowKAYJKoZIhvcNAQk0MRswGTAL
+# BglghkgBZQMEAgGhCgYIKoZIzj0EAwIwLwYJKoZIhvcNAQkEMSIEIERqWnt760BL
+# 8U+vc1SAmsdP54qo3TlTT54ch89JHhCYMIHJBgsqhkiG9w0BCRACLzGBuTCBtjCB
+# szCBsAQgVCr5oWqNci5mEUl4iumUwYqaruWmXLNEolSa+Wx5x4swgYswd6R1MHMx
+# CzAJBgNVBAYTAlVTMQ4wDAYDVQQIDAVUZXhhczEQMA4GA1UEBwwHSG91c3RvbjER
+# MA8GA1UECgwIU1NMIENvcnAxLzAtBgNVBAMMJlNTTC5jb20gVGltZXN0YW1waW5n
+# IElzc3VpbmcgUlNBIENBIFIxAhAfaxZi0i4bbF3xwMGgYA44MAoGCCqGSM49BAMC
+# BEcwRQIgQKbuVMTmc4UQZA/jr7A9S/dZKiGl1oAjaqT9ISh767MCIQDPQ6SjazRA
+# 4B11Wm8YKaVx8EHko2CxlwsgJNudYJXQrQ==
+# SIG # End signature block

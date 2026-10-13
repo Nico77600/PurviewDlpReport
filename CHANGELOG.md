@@ -3,6 +3,26 @@
 All notable changes are listed here. Versions follow MAJOR.MINOR.PATCH (see the guide, Annex E).
 Author: Nicolas Fabert.
 
+## [2.1.2] — 2026-10-13
+
+### Added
+- SHA256 owner Authenticode signatures with RFC3161 timestamps on the launcher, module, module metadata, integrity verifier and stable-file manifest. Fail-closed verification authenticates sixteen mandatory raw-file hashes before runtime loading, warm initialization and report template use. Original SQLite vendor bytes and authorship are preserved.
+- Exact coverage/completeness and provisional durations in `report-metadata.json`, including CSV-only reports; compatible business CSV columns are unchanged.
+- Optional company branding and explicit opt-in tenant/environment display (off by default), independent of the fixed Nicolas Fabert author.
+
+### Fixed
+- Bind databases to the tenant verified by an authenticated collection; reject mismatched tenants and retain explicit unverified-legacy-history warnings.
+- Distinguish exact second-level source-boundary observations from unexpected timestamps, retaining records and reporting bounded diagnostics without duplicate insertion.
+- Decide completeness from exact gaps and failed refreshes, not rounded percentages; explain Status as a read-only queried-time snapshot and recent data as provisional.
+- Sort HTML chronology using UTC and display offsets/UTC details across daylight-saving changes.
+- Validate source retention (1–30 days), settling and storage/backfill consistency; reject configurable author overrides.
+
+### Changed
+- Compile authenticated C# in memory once per process rather than trusting unsigned `bin` engine caches. Startup recompilation and recurring checks add overhead; this release does not claim broad load or production validation.
+- Preserve existing runtime paths, README and both HTML guides in packages. The same trusted manifest works for source and distribution; only explicitly named, non-runtime repository documents are unhashed. Configuration stays editable and is sanitized by the existing packager, which now verifies authenticity before and after copying.
+- Keep the existing required PowerShell 7 validation, advisory analysis/CodeQL and pinned Actions. PowerShell 7.4+ is the business requirement; Windows PowerShell 5.1 is signature inspection only.
+- Preserve the canonical personal-project disclaimer in README, runtime README and launcher help.
+
 ## [2.1.1] — 2026-09-30
 
 First public release.

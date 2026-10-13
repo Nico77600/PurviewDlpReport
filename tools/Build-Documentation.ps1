@@ -37,7 +37,7 @@
 
 .NOTES
     Author  : Nicolas Fabert
-    Version : 2.1.1
+    Version : 2.1.2
     PowerShell pitfall: never name a variable $matches — every -match overwrites the automatic
     $Matches, and variable names are case-insensitive.
 #>

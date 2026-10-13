@@ -1,2 +1,17 @@
 # Language statistics: the guides are documentation, not code.
 package/docs/** linguist-documentation
+package/** whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+
+# Authenticode and the manifest authenticate exact raw bytes, on every checkout.
+package/Invoke-PurviewDlpReport.ps1 -text
+package/PurviewDlpReport.psm1 -text
+package/PurviewDlpReport.psd1 -text
+package/Test-PackageIntegrity.ps1 -text
+package/PackageIntegrity.psd1 -text
+package/src/PurviewDlpReport.Engine.cs -text
+package/templates/Report.template.html -text
+package/docs/PurviewDlpReport-Guide.html -text
+package/docs/PurviewDlpReport-UserGuide.html -text
+package/README.md -text
+package/THIRD-PARTY-NOTICES.md -text
+package/lib/sqlite/**/*.dll -text

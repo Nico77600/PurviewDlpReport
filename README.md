@@ -85,6 +85,14 @@ notepad .\config\PurviewDlpReport.config.psd1      # TenantId, PolicyId, RuleId,
 
 Activity Explorer keeps 30 days of data: schedule the daily collection. The `package` folder of this repository holds exactly the files needed to run Purview DLP Report, with both guides. The zip of each [release](https://github.com/Nico77600/PurviewDlpReport/releases) contains the same run-time files with the HTML guides; `.\tools\New-DlpPackage.ps1` builds that zip content from the repository.
 
+## Signed packages and integrity (2.1.2)
+
+The launcher, module, module metadata, integrity verifier and integrity manifest carry Nicolas Fabert's SHA256 Authenticode signatures with RFC3161 timestamps. The trusted owner certificate thumbprint is `0F28E442889F17B5F4D251E8F96E7CC6E2C9C6D6`. Automatic checks block loading on a missing manifest, invalid signature, absent timestamp, changed protected bytes, extra stable code or a protected reparse point. See the [developer guide](package/docs/PurviewDlpReport-Guide.md#signed-package-integrity) for the exact boundary, trust requirements and source-change procedure.
+
+Only `config\PurviewDlpReport.config.psd1` is editable. Stable runtime files, the report template, bundled DLLs, README and both distributed HTML guides are authenticated. SQLite binaries keep their original vendor bytes and authorship. Verified C# compiles in memory once per process; startup and warm integrity checks have overhead, and old `bin` caches are never loaded. Windows PowerShell 5.1 can inspect signatures but cannot run the tool; business runtime requires PowerShell 7.4 or later.
+
+Coverage is queried time, not an event-delivery percentage. Exact gaps and failed refreshes remain incomplete even when a rounded percentage says 100%; `report-metadata.json` records that status. HTML sorting uses UTC across daylight-saving changes. Company branding is separate from the fixed author; tenant/environment display is off by default and requires administrator opt-in. A database is bound to its first authenticated tenant, with explicit warnings for unverified legacy history.
+
 ## Documentation
 
 | Guide | Content |

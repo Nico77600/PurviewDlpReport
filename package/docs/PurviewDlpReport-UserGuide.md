@@ -1,12 +1,22 @@
 ---
 title: Purview DLP Report
 subtitle: User guide
-version: 2.1.1
+version: 2.1.2
 author: Nicolas Fabert
-updated: 2026-10-08
+updated: 2026-10-13
 ---
 
 # Purview DLP Report — User guide
+
+### Signed package checks (2.1.2)
+
+Review Nicolas Fabert's publisher signature before unblocking downloads. Automatic checks require five valid owner signatures with timestamps and a complete stable-file manifest, and stop on missing/changed code, templates, distributed guides, extra stable files or protected reparse points. Expected signer thumbprint: `0F28E442889F17B5F4D251E8F96E7CC6E2C9C6D6`. Follow organizational execution policy; do not disable it or verification to work around trust/revocation failures.
+
+Edit only `config\PurviewDlpReport.config.psd1`; code edits require the developer guide's re-signing procedure. PowerShell 7.4+ is required; Windows PowerShell 5.1 can only inspect signatures. Verified C# recompiles in memory in each new process, with startup/check overhead, and never loads an old unsigned `bin` cache.
+
+Coverage is queried time, not an event-delivery percentage. Check `report-metadata.json` and exit code: exact gaps and failed refreshes remain incomplete even if 100% is displayed after rounding; recent data can be provisional. `Status` is a read-only snapshot, not collection progress. HTML sorting uses UTC and shows offsets across daylight-saving changes; compatible CSV dates stay local without an offset.
+
+Company branding is independent of the fixed author. Tenant/environment display defaults to off and requires administrator opt-in. Use a separate database per tenant; authenticated binding rejects another tenant and preserves warnings about unverified legacy history.
 
 > What is needed before the first report, then the commands used every day: **which messages matched the DLP rule?**, **who sent them, to whom and when?**, and **is the daily collection up to date?** The configuration keys, the application registration, the lab measurements and the internals are in the [developer guide](PurviewDlpReport-Guide.md).
 
@@ -187,7 +197,7 @@ Click a row to see every recipient, with a **Copy recipients** button. The repor
 **To, Cc and Bcc are not separated** and Bcc is included: protect the CSV and HTML files as sensitive data. A rule match is not a sent mail, and the detection time is close to, but not, the send time.
 
 > [!TIP]
-> Files are written in `<folder>.pending`, renamed only when everything is complete: **a folder without `.pending` is always a complete report**. Up to `MaxRowsPerFile` messages (500,000 by default) each report is one CSV and one HTML file; above that, files are split by local **week**, by **day** or every *MaxRowsPerFile* **rows**.
+> Files are written in `<folder>.pending`, renamed only when file generation is complete: **a folder without `.pending` does not prove full coverage**. Check the summary, exit code and `report-metadata.json`. Up to `MaxRowsPerFile` messages (500,000 by default) each report is one CSV and one HTML file; above that, files are split by local **week**, by **day** or every *MaxRowsPerFile* **rows**.
 
 > [!TIP]
 > **To send by e-mail**: use `-IncludeRecipientDetails:$false` (CSV about 6× smaller), or zip the CSV (about 10× smaller).

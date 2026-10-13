@@ -2,11 +2,11 @@
 //  PurviewDlpReport.Engine.cs
 // -----------------------------------------------------------------------------
 //  Author  : Nicolas Fabert
-//  Version : 2.1.1
+//  Version : 2.1.2
 //  Purpose : Performance-critical part of the Purview DLP Report tool.
 //            This file is compiled automatically by PurviewDlpReport.psm1 the
-//            first time it is used (and again whenever it changes). The
-//            compiled DLL is cached in the .\bin folder.
+//            once per process after the package has been authenticated. The
+//            compiled engine stays in memory; unsigned bin caches are ignored.
 //
 //  Contents
 //    1. EventNormalizer : turns one Activity Explorer JSON record into a DlpEvent
@@ -438,6 +438,10 @@ namespace PurviewDlpReport
         public int Quarantined;      // rejected by the normalizer (kept in the quarantine table)
         public int Conflicts;        // same MessageID seen with a different sender/subject/recipients
         public int WithoutCount;     // events without a reliable recipient count
+        public int OutOfRange;       // normalized events outside the requested interval
+        public List<long> OutOfRangeHappenedMs = new List<long>(); // bounded diagnostic samples
+        public int BoundaryEvents, BoundaryNewEvents, BoundaryDuplicates, UnexpectedOutOfRange;
+        public List<TimestampDiagnostic> UnexpectedTimestampSamples = new List<TimestampDiagnostic>();
         public long MinHappenedMs;
         public long MaxHappenedMs;
         public string Sha256;        // hash of ResultData, used to detect a repeated page
@@ -445,6 +449,12 @@ namespace PurviewDlpReport
         public string RuleName;
         public double ParseMs, NormalizeMs, WriteMs, CommitMs;   // time spent in each part (diagnostics)
         public Dictionary<string, int> QuarantineReasons = new Dictionary<string, int>();
+    }
+
+    public sealed class TimestampDiagnostic
+    {
+        public long HappenedMs, StartMs, EndMs;
+        public bool AlreadyPresent;
     }
 
     /// <summary>
@@ -657,6 +667,34 @@ CREATE INDEX ix_quarantine_time ON quarantine (received_ms);
             }
         }
 
+        public void ValidateTenant(string tenantId)
+        {
+            string stored = GetMetadata("tenant_id");
+            if (stored != null && !string.Equals(stored, tenantId, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Database tenant mismatch: this database belongs to " + stored +
+                    ", but the configuration/session specifies " + tenantId + ". Use a separate DatabasePath for each tenant.");
+        }
+
+        public bool BindAuthenticatedTenant(string tenantId)
+        {
+            if (_readOnly) throw new InvalidOperationException("Cannot bind a tenant in a read-only database.");
+            Guid parsed;
+            if (!Guid.TryParse(tenantId, out parsed)) throw new ArgumentException("Authenticated tenant ID must be a GUID.", nameof(tenantId));
+            ValidateTenant(tenantId);
+            if (GetMetadata("tenant_id") != null) return false;
+            bool legacy = Scalar<long>("SELECT COUNT(*) FROM collection_interval;") > 0 ||
+                Scalar<long>("SELECT COUNT(*) FROM dlp_event;") > 0;
+            _tx = _connection.BeginTransaction();
+            try
+            {
+                SetMetadata("tenant_id", parsed.ToString());
+                SetMetadata("legacy_tenant_history_unverified", legacy ? "true" : "false");
+                _tx.Commit();
+            }
+            finally { _tx.Dispose(); _tx = null; }
+            return legacy;
+        }
+
         // ---- Runs, targets, intervals --------------------------------------
 
         public long StartRun(string mode, string account, string host, string toolVersion, string details)
@@ -826,6 +864,17 @@ RETURNING target_id;"))
                     throw new FormatException("MalformedPage: ResultData is not a JSON array.");
                 result.ParseMs = clock.Elapsed.TotalMilliseconds;
                 long now = NowMs();
+                long intervalStart, intervalEnd;
+                using (SqliteCommand bounds = Command("SELECT start_ms, end_ms FROM collection_interval WHERE interval_id = $i;"))
+                {
+                    bounds.Parameters.AddWithValue("$i", intervalId);
+                    using (SqliteDataReader reader = bounds.ExecuteReader())
+                    {
+                        if (!reader.Read()) throw new InvalidOperationException("Collection interval not found: " + intervalId);
+                        intervalStart = reader.GetInt64(0);
+                        intervalEnd = reader.GetInt64(1);
+                    }
+                }
                 PrepareIngestCommands();
                 _tx = _connection.BeginTransaction();
                 try
@@ -852,6 +901,15 @@ RETURNING target_id;"))
                         if (result.PolicyName == null) result.PolicyName = e.PolicyName;
                         if (result.RuleName == null) result.RuleName = e.RuleName;
                         if (!e.RecipientCount.HasValue) result.WithoutCount++;
+                        bool outside = e.HappenedMs < intervalStart || e.HappenedMs >= intervalEnd;
+                        // Only exact source-second boundaries qualify, never a general +/- one-second tolerance.
+                        bool boundary = outside && (e.HappenedMs == intervalStart - intervalStart % 1000 ||
+                            (intervalEnd % 1000 == 0 && e.HappenedMs == intervalEnd));
+                        if (outside)
+                        {
+                            result.OutOfRange++;
+                            if (result.OutOfRangeHappenedMs.Count < 10) result.OutOfRangeHappenedMs.Add(e.HappenedMs);
+                        }
                         result.MinHappenedMs = Math.Min(result.MinHappenedMs, e.HappenedMs);
                         result.MaxHappenedMs = Math.Max(result.MaxHappenedMs, e.HappenedMs);
 
@@ -868,8 +926,23 @@ RETURNING target_id;"))
                         _insertEvent.Parameters["$cs"].Value = e.CountSource;
                         _insertEvent.Parameters["$i"].Value = intervalId;
                         _insertEvent.Parameters["$now"].Value = now;
-                        if (_insertEvent.ExecuteNonQuery() == 1) result.NewEvents++;
+                        bool inserted = _insertEvent.ExecuteNonQuery() == 1;
+                        if (inserted) result.NewEvents++;
                         else result.Duplicates++;
+                        if (boundary)
+                        {
+                            result.BoundaryEvents++;
+                            if (inserted) result.BoundaryNewEvents++;
+                            else result.BoundaryDuplicates++;
+                        }
+                        else if (outside)
+                        {
+                            result.UnexpectedOutOfRange++;
+                            if (result.UnexpectedTimestampSamples.Count < 10)
+                                result.UnexpectedTimestampSamples.Add(new TimestampDiagnostic {
+                                    HappenedMs = e.HappenedMs, StartMs = intervalStart, EndMs = intervalEnd, AlreadyPresent = !inserted
+                                });
+                        }
                     }
                     double beforeCommit = clock.Elapsed.TotalMilliseconds;
                     _tx.Commit();
@@ -1176,6 +1249,12 @@ ORDER BY a.first_ms, a.message_key;"))
         public string Title = "DLP messages with more than 25 recipients";
         public string PolicyName, RuleName, ToolVersion, RangeName, CoverageNote;
         public double CoveragePercent = 100;
+        public long MissingMs, ProvisionalMs;
+        public double SettledCoveragePercent = 100;
+        public bool CollectionSucceeded = true;
+        public string CompanyName, TenantId, TenantOrganization, EnvironmentName, TenantIdentitySource;
+        public bool LegacyTenantHistoryUnverified;
+        public bool CoverageComplete { get { return MissingMs == 0 && CollectionSucceeded; } }
         public int HtmlChunkRows = 20000;
     }
 
@@ -1434,7 +1513,8 @@ ORDER BY a.first_ms, a.message_key;"))
             readonly Dictionary<string, int> _subjects = new Dictionary<string, int>(StringComparer.Ordinal);
             readonly Dictionary<string, int> _people = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             readonly List<string> _newSenders = new List<string>(), _newSubjects = new List<string>(), _newPeople = new List<string>();
-            readonly List<long> _t = new List<long>(), _n = new List<long>();
+            readonly List<long> _t = new List<long>(), _u = new List<long>(), _n = new List<long>();
+            readonly List<int> _o = new List<int>();
             readonly List<int> _s = new List<int>(), _j = new List<int>(), _rl = new List<int>(), _ri = new List<int>();
             readonly List<string> _m = new List<string>();
             long _rows, _chunks, _recipientTotal, _withoutCount;
@@ -1459,9 +1539,11 @@ ORDER BY a.first_ms, a.message_key;"))
             public void Add(ReportRow r)
             {
                 _rows++;
-                // Local wall-clock seconds: the page formats them as UTC, so the browser's own
-                // time zone never changes what is displayed.
-                _t.Add((r.FirstMs + (long)_q.Zone.GetUtcOffset(DateTimeOffset.FromUnixTimeMilliseconds(r.FirstMs)).TotalMilliseconds) / 1000);
+                // Keep UTC chronology separate from local display, including the repeated autumn hour.
+                TimeSpan offset = _q.Zone.GetUtcOffset(DateTimeOffset.FromUnixTimeMilliseconds(r.FirstMs));
+                _t.Add((r.FirstMs + (long)offset.TotalMilliseconds) / 1000);
+                _u.Add(r.FirstMs);
+                _o.Add((int)offset.TotalMinutes);
                 _s.Add(Index(_senders, _newSenders, r.Sender));
                 _j.Add(Index(_subjects, _newSubjects, r.Subject));
                 bool hasCount = r.RecipientCount.HasValue && !r.CountConflict;
@@ -1482,7 +1564,8 @@ ORDER BY a.first_ms, a.message_key;"))
                 if (_t.Count == 0) return;
                 var chunk = new Dictionary<string, object>
                 {
-                    { "ds", _newSenders }, { "dj", _newSubjects }, { "t", _t }, { "s", _s }, { "j", _j }, { "n", _n }, { "m", _m }
+                    { "ds", _newSenders }, { "dj", _newSubjects }, { "t", _t }, { "u", _u }, { "o", _o },
+                    { "s", _s }, { "j", _j }, { "n", _n }, { "m", _m }
                 };
                 if (_q.IncludeRecipientDetails) { chunk["dr"] = _newPeople; chunk["rl"] = _rl; chunk["ri"] = _ri; }
                 byte[] json = JsonSerializer.SerializeToUtf8Bytes(chunk, JsonOptions);
@@ -1495,7 +1578,7 @@ ORDER BY a.first_ms, a.message_key;"))
                 }
                 _chunks++;
                 foreach (var list in new List<string>[] { _newSenders, _newSubjects, _newPeople, _m }) list.Clear();
-                _t.Clear(); _n.Clear(); _s.Clear(); _j.Clear(); _rl.Clear(); _ri.Clear();
+                _t.Clear(); _u.Clear(); _o.Clear(); _n.Clear(); _s.Clear(); _j.Clear(); _rl.Clear(); _ri.Clear();
             }
 
             public void Close(ReportPart part, List<ReportPart> plan)
@@ -1518,13 +1601,25 @@ ORDER BY a.first_ms, a.message_key;"))
                     { "recipientTotal", _recipientTotal }, { "withoutCount", _withoutCount },
                     { "includeRecipients", _q.IncludeRecipientDetails },
                     { "coveragePercent", Math.Round(_q.CoveragePercent, 2) },
+                    { "coverageComplete", _q.CoverageComplete }, { "missingMs", _q.MissingMs },
+                    { "settledCoveragePercent", _q.SettledCoveragePercent }, { "provisionalMs", _q.ProvisionalMs },
+                    { "collectionSucceeded", _q.CollectionSucceeded },
                     { "coverageNote", _q.CoverageNote },
+                    { "companyName", _q.CompanyName }, { "author", "Nicolas Fabert" },
                     { "generated", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) },
                     { "toolVersion", _q.ToolVersion },
                     { "siblings", plan.Select(p => new Dictionary<string, object> {
                         { "file", p.BaseName + ".html" }, { "label", p.GroupLabel + (p.PartsInGroup > 1 ? " (part " + p.PartInGroup + " of " + p.PartsInGroup + ")" : "") },
                         { "rows", p.RowCount }, { "index", p.Index } }).ToList() }
                 };
+                if (!string.IsNullOrEmpty(_q.TenantId))
+                {
+                    meta["tenantId"] = _q.TenantId;
+                    meta["tenantOrganization"] = _q.TenantOrganization;
+                    meta["environmentName"] = _q.EnvironmentName;
+                    meta["tenantIdentitySource"] = _q.TenantIdentitySource;
+                    meta["legacyTenantHistoryUnverified"] = _q.LegacyTenantHistoryUnverified;
+                }
                 string json = JsonSerializer.Serialize(meta, JsonOptions).Replace("</", "<\\/");
                 _w.Write(_template[1]);
                 _w.Write(json);
