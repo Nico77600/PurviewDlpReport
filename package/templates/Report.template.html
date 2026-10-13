@@ -117,7 +117,7 @@ footer { color:var(--cp-text-muted); font-size:12px; line-height:1.6; }
 </style></head><body>
 <div id="loading"><div class="box"><span class="label">Loading report</span><p id="loading-text">Preparing data...</p><div class="track"><div class="fill" id="loading-fill"></div></div></div></div>
 <header><div class="hero-top"><div><span id="origin">Purview DLP / Exchange</span><h1 id="title">Message activity</h1>
-<p class="subtitle" id="subtitle"></p></div>
+<p class="subtitle" id="subtitle"></p><div id="report-identity" hidden></div></div>
 <div class="period"><span class="label">Detection time range</span><div id="range"></div></div></div>
 <div class="metrics">
 <article class="tile tile-primary"><span class="tile-label">Matching messages</span><svg class="tile-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3 6 9 7 9-7"/></svg><strong id="metric-messages">0</strong><small>Unique Message IDs</small></article>
@@ -173,16 +173,25 @@ footer { color:var(--cp-text-muted); font-size:12px; line-height:1.6; }
   // Times are stored as local wall-clock seconds of the report time zone and displayed with getUTC*.
   const stamp = s => { const d = new Date(s * 1000); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`; };
   const withRecipients = !!meta.includeRecipients;
+  const offsetText = minutes => `${minutes < 0 ? "-" : "+"}${pad(Math.floor(Math.abs(minutes) / 60))}:${pad(Math.abs(minutes) % 60)}`;
 
   // ---- Header texts --------------------------------------------------------
   el("title").textContent = meta.title || "Message activity";
   el("subtitle").textContent = `Unique messages matched by the DLP rule${meta.rule ? " " + meta.rule : ""}${meta.policy ? " (policy " + meta.policy + ")" : ""}. One row per Message ID.`;
+  for (const text of [
+    meta.companyName ? `Company: ${meta.companyName}` : "",
+    meta.tenantId ? `Tenant: ${meta.tenantOrganization || meta.tenantId}${meta.tenantOrganization ? " (" + meta.tenantId + ")" : ""}` : "",
+    meta.tenantId && meta.environmentName ? `Environment (admin label): ${meta.environmentName}` : "",
+    meta.tenantId ? `Identity source: ${meta.tenantIdentitySource}${meta.legacyTenantHistoryUnverified ? "; historical tenant attribution is unverified" : ""}` : ""
+  ]) { if (text) { const line = document.createElement("p"); line.className = "caption"; line.textContent = text; el("report-identity").append(line); el("report-identity").hidden = false; } }
   const range = el("range");
   for (const [label, value] of [["From", meta.fileStart], ["To", meta.fileEnd]]) { const line = document.createElement("div"); line.textContent = `${label} ${value}`; range.append(line); }
   const zone = document.createElement("small"); zone.textContent = `${meta.timeZone} - end excluded`; range.append(zone);
   if (meta.partCount > 1) { const whole = document.createElement("div"); whole.className = "caption"; whole.style.margin = "8px 0 0"; whole.textContent = `Whole report: ${meta.periodStart} to ${meta.periodEnd}`; range.append(whole); }
-  if (meta.coveragePercent < 100) { const c = document.createElement("div"); c.className = "caption"; c.style.margin = "8px 0 0"; c.textContent = `Data coverage ${meta.coveragePercent}%${meta.coverageNote ? " - " + meta.coverageNote : ""}`; range.append(c); }
-  el("footer").textContent = `Detection time is the time Microsoft Purview matched the DLP rule (Activity Explorer "Happened"), shown in ${meta.timeZone}. Recipients are the combined list reported by Activity Explorer (To, Cc and Bcc are not separated). This file contains e-mail addresses: store and share it accordingly. Generated ${meta.generated} by Purview DLP Report ${meta.toolVersion || ""}.`;
+  const coverage = document.createElement("div"); coverage.className = "caption"; coverage.style.margin = "8px 0 0";
+  coverage.textContent = `${meta.coverageComplete ? "Requested period covered" : "INCOMPLETE"} - ${meta.coveragePercent}% of queried time (rounded)${meta.coverageNote ? " - " + meta.coverageNote : ""} Coverage is not a percentage of events received.`;
+  range.append(coverage);
+  el("footer").textContent = `Detection time is the time Microsoft Purview matched the DLP rule (Activity Explorer "Happened"), shown in ${meta.timeZone} with its UTC offset. Chronological sorting uses UTC, including daylight-saving changes. CSV dates use the same local time without an offset; message details also show UTC. Recipients are the combined list reported by Activity Explorer (To, Cc and Bcc are not separated). This file contains e-mail addresses: store and share it accordingly. Generated ${meta.generated} by Purview DLP Report ${meta.toolVersion || ""}. Author: Nicolas Fabert.`;
   if (!withRecipients) { el("recipient-filter-label").hidden = true; el("copy-recipients").hidden = true; }
 
   // ---- Other files of the same report -------------------------------------------
@@ -199,7 +208,7 @@ footer { color:var(--cp-text-muted); font-size:12px; line-height:1.6; }
 
   // ---- Data loading: JSON -> gzip -> base64 chunks ------------------------------
   const total = meta.rows;
-  const T = new Float64Array(total), S = new Int32Array(total), J = new Int32Array(total), N = new Int32Array(total), M = new Array(total);
+  const T = new Float64Array(total), U = new Float64Array(total), O = new Int32Array(total), S = new Int32Array(total), J = new Int32Array(total), N = new Int32Array(total), M = new Array(total);
   const senders = [], subjects = [], people = [];
   const RO = new Int32Array(total + 1); let riParts = [], riLength = 0;
   async function decode(b64) {
@@ -218,7 +227,7 @@ footer { color:var(--cp-text-muted); font-size:12px; line-height:1.6; }
       for (const v of c.dj) subjects.push(v);
       if (withRecipients) for (const v of c.dr) people.push(v);
       for (let i = 0; i < c.t.length; i++, row++) {
-        T[row] = c.t[i]; S[row] = c.s[i]; J[row] = c.j[i]; N[row] = c.n[i]; M[row] = c.m[i];
+        T[row] = c.t[i]; U[row] = c.u[i]; O[row] = c.o[i]; S[row] = c.s[i]; J[row] = c.j[i]; N[row] = c.n[i]; M[row] = c.m[i];
         if (withRecipients) { RO[row + 1] = RO[row] + c.rl[i]; }
       }
       if (withRecipients) { riParts.push(Int32Array.from(c.ri)); riLength += c.ri.length; }
@@ -235,7 +244,7 @@ footer { color:var(--cp-text-muted); font-size:12px; line-height:1.6; }
 
   // ---- Columns -------------------------------------------------------------------
   const columns = [
-    { title: "Detection time", width: "160px", cell: i => stamp(T[i]) },
+    { title: "Detection time", width: "210px", cell: i => `${stamp(T[i])} ${offsetText(O[i])}` },
     { title: "Sender", width: "minmax(160px,1.1fr)", cell: i => senders[S[i]] },
     { title: "Subject", width: "minmax(180px,1.6fr)", cell: i => subjects[J[i]] },
     { title: "Recipients", width: "96px", cls: "num", cell: i => N[i] < 0 ? "" : number(N[i]) },
@@ -285,10 +294,10 @@ footer { color:var(--cp-text-muted); font-size:12px; line-height:1.6; }
   }
   function sortView() {
     const mode = el("sort").value;
-    const cmp = mode === "time-asc" ? (a, b) => T[a] - T[b] || a - b
-      : mode === "count-desc" ? (a, b) => N[b] - N[a] || T[b] - T[a]
-      : mode === "sender" ? (a, b) => (senders[S[a]] < senders[S[b]] ? -1 : senders[S[a]] > senders[S[b]] ? 1 : T[b] - T[a])
-      : (a, b) => T[b] - T[a] || b - a;
+    const cmp = mode === "time-asc" ? (a, b) => U[a] - U[b] || a - b
+      : mode === "count-desc" ? (a, b) => N[b] - N[a] || U[b] - U[a]
+      : mode === "sender" ? (a, b) => (senders[S[a]] < senders[S[b]] ? -1 : senders[S[a]] > senders[S[b]] ? 1 : U[b] - U[a])
+      : (a, b) => U[b] - U[a] || b - a;
     view.sort(cmp);
   }
 
@@ -353,7 +362,8 @@ footer { color:var(--cp-text-muted); font-size:12px; line-height:1.6; }
 
   // ---- Details dialog ------------------------------------------------------------------
   function showDetails(i) {
-    const fields = [["Detection time", `${stamp(T[i])} (${meta.timeZone})`], ["Sender", senders[S[i]]], ["Subject", subjects[J[i]]],
+    const fields = [["Detection time", `${stamp(T[i])} ${offsetText(O[i])} (${meta.timeZone})`],
+      ["Detection time (UTC)", new Date(U[i]).toISOString()], ["Sender", senders[S[i]]], ["Subject", subjects[J[i]]],
       ["Recipient count", N[i] < 0 ? "Not reported" : number(N[i])], ["Message ID", M[i]]];
     const dl = el("detail-fields"); dl.replaceChildren();
     for (const [k, v] of fields) { const dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = k; dd.textContent = v; dl.append(dt, dd); }

@@ -3,7 +3,8 @@
   "testMode": "pester",
   "testEntry": null,
   "tests": [
-    "tests/PurviewDlpReport.Tests.ps1"
+    "tests/PurviewDlpReport.Tests.ps1",
+    "tests/PackageIntegrity.Tests.ps1"
   ],
   "packageBuilder": "tools/New-DlpPackage.ps1",
   "packageEntry": "Invoke-PurviewDlpReport.ps1"

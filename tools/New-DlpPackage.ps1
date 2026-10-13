@@ -7,6 +7,7 @@
     The package contains only what Invoke-PurviewDlpReport.ps1 needs at run time, plus the HTML guides
     and the licence notice of the SQLite binaries:
         Invoke-PurviewDlpReport.ps1, PurviewDlpReport.psd1, PurviewDlpReport.psm1,
+        Test-PackageIntegrity.ps1, PackageIntegrity.psd1,
         config\, src\, templates\, lib\sqlite\, docs\PurviewDlpReport-UserGuide.html,
         docs\PurviewDlpReport-Guide.html, README.md, THIRD-PARTY-NOTICES.md
     It never copies data\, reports\, logs\ or bin\: there is no database in the package, the tool
@@ -25,11 +26,11 @@
 
 .EXAMPLE
     .\tools\New-DlpPackage.ps1
-    Creates ..\package\PurviewDlpReport-2.1.1.
+    Creates ..\package\PurviewDlpReport-2.1.2.
 
 .NOTES
     Author  : Nicolas Fabert
-    Version : 2.1.1
+    Version : 2.1.2
 #>
 [CmdletBinding()]
 param(
@@ -40,6 +41,23 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $packageRoot = Join-Path $root 'package'
+function Assert-AuthenticatedPackage([string]$Path) {
+    $verifier = Join-Path $Path 'Test-PackageIntegrity.ps1'
+    $cursor = [IO.Path]::GetFullPath($verifier)
+    while ($cursor) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Package integrity: reparse point: $cursor" }
+        $cursor = [IO.Path]::GetDirectoryName($cursor)
+    }
+    $signature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $verifier -ErrorAction Stop
+    if ([string]$signature.Status -cne 'Valid' -or $null -eq $signature.SignerCertificate -or
+        $signature.SignerCertificate.Thumbprint -cne '0F28E442889F17B5F4D251E8F96E7CC6E2C9C6D6' -or
+        $null -eq $signature.TimeStamperCertificate) {
+        throw 'Package integrity: verifier must have the trusted, timestamped owner signature.'
+    }
+    & $verifier -Root $Path
+}
+Assert-AuthenticatedPackage $packageRoot
 $version = (Import-PowerShellDataFile (Join-Path $packageRoot 'PurviewDlpReport.psd1')).ModuleVersion
 if (-not $Destination) { $Destination = Join-Path (Split-Path $root -Parent) "package\PurviewDlpReport-$version" }
 $Destination = [IO.Path]::GetFullPath($Destination, (Get-Location).Path).TrimEnd('\')
@@ -57,7 +75,7 @@ if (Test-Path -LiteralPath $Destination) {
 
 # ---- Files needed at run time ---------------------------------------------------------------------------
 $files = [Collections.Generic.List[string]]::new()
-foreach ($f in 'Invoke-PurviewDlpReport.ps1', 'PurviewDlpReport.psd1', 'PurviewDlpReport.psm1', 'README.md', 'THIRD-PARTY-NOTICES.md',
+foreach ($f in 'Invoke-PurviewDlpReport.ps1', 'PurviewDlpReport.psd1', 'PurviewDlpReport.psm1', 'Test-PackageIntegrity.ps1', 'PackageIntegrity.psd1', 'README.md', 'THIRD-PARTY-NOTICES.md',
     'src\PurviewDlpReport.Engine.cs', 'templates\Report.template.html', 'docs\PurviewDlpReport-UserGuide.html',
     'docs\PurviewDlpReport-Guide.html') { $files.Add($f) }
 Get-ChildItem -LiteralPath (Join-Path $packageRoot 'lib\sqlite') -Recurse -File | ForEach-Object { $files.Add($_.FullName.Substring($packageRoot.Length + 1)) }
@@ -74,13 +92,18 @@ foreach ($f in $files) {
 $configRelative = 'config\PurviewDlpReport.config.psd1'
 $config = [IO.File]::ReadAllText((Join-Path $packageRoot $configRelative))
 $emptied = [Collections.Generic.List[string]]::new()
-foreach ($key in 'TenantId', 'Organization', 'PolicyId', 'RuleId', 'UserPrincipalName', 'AppId', 'CertificateThumbprint') {
+foreach ($key in 'TenantId', 'Organization', 'PolicyId', 'RuleId', 'UserPrincipalName', 'AppId', 'CertificateThumbprint',
+    'PolicyName', 'RuleName', 'CompanyName', 'EnvironmentName') {
     $pattern = "(?m)^(\s*$key\s*=\s*)'([^']*)'"
     $found = [regex]::Matches($config, $pattern)
     if ($found.Count -ne 1) { throw "The key $key must appear exactly once in $configRelative (found $($found.Count))." }
-    if ($found[0].Groups[2].Value) { $emptied.Add($found[0].Groups[2].Value) }
+    # Display labels can be generic words used in the documentation; always clear them.
+    if ($key -notin 'PolicyName', 'RuleName', 'CompanyName', 'EnvironmentName' -and $found[0].Groups[2].Value) { $emptied.Add($found[0].Groups[2].Value) }
     $config = [regex]::Replace($config, $pattern, '$1''''')
 }
+$displayPattern = '(?m)^(\s*ShowTenantInformation\s*=\s*)\$(true|false)\b'
+if ([regex]::Matches($config, $displayPattern, 'IgnoreCase').Count -ne 1) { throw 'ShowTenantInformation must appear exactly once as a boolean.' }
+$config = [regex]::Replace($config, $displayPattern, '${1}$$false', 'IgnoreCase')
 $configTarget = Join-Path $Destination $configRelative
 [void][IO.Directory]::CreateDirectory((Split-Path $configTarget -Parent))
 [IO.File]::WriteAllText($configTarget, $config, [Text.UTF8Encoding]::new($true))
@@ -101,6 +124,7 @@ foreach ($value in $emptied) {
     }
 }
 if ($problems.Count) { throw ("Package not valid ($Destination):`n - " + ($problems -join "`n - ")) }
+Assert-AuthenticatedPackage $Destination
 
 $all = Get-ChildItem -LiteralPath $Destination -Recurse -File
 Write-Host ''

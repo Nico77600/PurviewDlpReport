@@ -3,7 +3,7 @@
 <#
     Purview DLP Report - automated tests (Pester 5 or later).
     Author  : Nicolas Fabert
-    Version : 2.1.1
+    Version : 2.1.2
 
     Run:  Invoke-Pester -Path .\tests\PurviewDlpReport.Tests.ps1 -Output Detailed
 
@@ -23,7 +23,7 @@ BeforeAll {
 
     # Test configuration = the delivered configuration file with fictitious tenant values
     # (the delivered file may contain real values or empty ones).
-    $script:ConfigDirectory = Join-Path ([IO.Path]::GetTempPath()) ('PurviewDlpReportTests-' + [guid]::NewGuid().ToString('N'))
+    $script:ConfigDirectory = Join-Path $TestDrive 'configuration'
     [void][IO.Directory]::CreateDirectory($script:ConfigDirectory)
     $script:ConfigPath = Join-Path $script:ConfigDirectory 'test.config.psd1'
     $text = [IO.File]::ReadAllText((Join-Path $script:Root 'config\PurviewDlpReport.config.psd1'))
@@ -83,6 +83,17 @@ BeforeAll {
     }
     function New-TestPageData([string]$Json) { $p = [PurviewDlpReport.PageData]::new(); $p.ResultData = $Json; return $p }
     function Ms([string]$Utc) { return [DateTimeOffset]::Parse($Utc, [Globalization.CultureInfo]::InvariantCulture).ToUnixTimeMilliseconds() }
+    function Read-TestHtml([string]$Path) {
+        $html = Get-Content -LiteralPath $Path -Raw
+        $meta = [regex]::Match($html, '<script id="report-meta" type="application/json">(.*?)</script>', 'Singleline').Groups[1].Value | ConvertFrom-Json
+        $chunks = foreach ($match in [regex]::Matches($html, '<script type="application/x-dlp-chunk">([A-Za-z0-9+/=\r\n]+)</script>')) {
+            $stream = [IO.MemoryStream]::new([Convert]::FromBase64String($match.Groups[1].Value))
+            $gzip = [IO.Compression.GZipStream]::new($stream, [IO.Compression.CompressionMode]::Decompress)
+            $reader = [IO.StreamReader]::new($gzip)
+            try { $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose(); $stream.Dispose() }
+        }
+        [pscustomobject]@{ Html = $html; Meta = $meta; Chunks = @($chunks) }
+    }
 }
 
 AfterAll {
@@ -96,13 +107,11 @@ Describe 'Disclaimer synchronization' {
         if ($sections.Count -ne 1) { throw 'The root README must have exactly one Disclaimer section.' }
         $script:Disclaimer = ($sections[0].Groups['Text'].Value -replace "`r`n", "`n").Trim()
     }
-
     It 'ships the complete root disclaimer in the runtime README' {
         $sections = [regex]::Matches((Get-Content (Join-Path $script:Root 'README.md') -Raw), $script:DisclaimerPattern)
         $sections.Count | Should -Be 1
         ($sections[0].Groups['Text'].Value -replace "`r`n", "`n").Trim() | Should -BeExactly $script:Disclaimer
     }
-
     It 'includes the complete root disclaimer in the entry script help notes' {
         $errors = $null
         $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:Root 'Invoke-PurviewDlpReport.ps1'), [ref]$null, [ref]$errors)
@@ -114,23 +123,17 @@ Describe 'Disclaimer synchronization' {
         $start | Should -BeGreaterOrEqual 0
         $notes.Substring($start) | Should -BeExactly $script:Disclaimer
     }
-
     It 'ships the exact runtime README and disclaimer through the existing package builder' {
-        $destination = Join-Path ([IO.Path]::GetTempPath()) ('PurviewDlpPackageTests-' + [guid]::NewGuid().ToString('N'))
+        $destination = Join-Path $TestDrive 'disclaimer-package'
         Test-Path -LiteralPath $destination | Should -BeFalse
-        try {
-            & (Join-Path $script:RepoRoot 'tools\New-DlpPackage.ps1') -Destination $destination | Out-Null
-            $readme = Join-Path $destination 'README.md'
-            $readme | Should -Exist
-            (Get-FileHash -LiteralPath $readme -Algorithm SHA256).Hash |
-                Should -BeExactly (Get-FileHash -LiteralPath (Join-Path $script:Root 'README.md') -Algorithm SHA256).Hash
-            $sections = [regex]::Matches((Get-Content -LiteralPath $readme -Raw), $script:DisclaimerPattern)
-            $sections.Count | Should -Be 1
-            ($sections[0].Groups['Text'].Value -replace "`r`n", "`n").Trim() | Should -BeExactly $script:Disclaimer
-        }
-        finally {
-            if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }
-        }
+        & (Join-Path $script:RepoRoot 'tools\New-DlpPackage.ps1') -Destination $destination | Out-Null
+        $readme = Join-Path $destination 'README.md'
+        $readme | Should -Exist
+        (Get-FileHash -LiteralPath $readme -Algorithm SHA256).Hash |
+            Should -BeExactly (Get-FileHash -LiteralPath (Join-Path $script:Root 'README.md') -Algorithm SHA256).Hash
+        $sections = [regex]::Matches((Get-Content -LiteralPath $readme -Raw), $script:DisclaimerPattern)
+        $sections.Count | Should -Be 1
+        ($sections[0].Groups['Text'].Value -replace "`r`n", "`n").Trim() | Should -BeExactly $script:Disclaimer
     }
 }
 
@@ -152,6 +155,31 @@ Describe 'Configuration' {
         $path = Join-Path $TestDrive 'cert.psd1'
         (Get-Content $script:ConfigPath -Raw).Replace("Mode                  = 'Interactive'", "Mode                  = 'Certificate'") | Set-Content -LiteralPath $path
         { Import-DlpConfiguration -Path $path -Root $script:Root } | Should -Throw -ExpectedMessage '*AppId*CertificateThumbprint*'
+    }
+    It 'rejects source retention beyond the documented Activity Explorer window' {
+        $path = Join-Path $TestDrive 'retention.psd1'
+        (Get-Content $script:ConfigPath -Raw).Replace('SourceRetentionDays  = 30', 'SourceRetentionDays  = 31') | Set-Content -LiteralPath $path
+        { Import-DlpConfiguration -Path $path -Root $script:Root } | Should -Throw -ExpectedMessage '*SourceRetentionDays*between 1 and 30*'
+    }
+    It 'rejects local retention shorter than the collection backfill' {
+        $path = Join-Path $TestDrive 'storage-retention.psd1'
+        (Get-Content $script:ConfigPath -Raw).Replace('RetentionDays          = 180', 'RetentionDays          = 20') | Set-Content -LiteralPath $path
+        { Import-DlpConfiguration -Path $path -Root $script:Root } | Should -Throw -ExpectedMessage '*Storage.RetentionDays must be 0 or at least Collection.BackfillDays*'
+    }
+    It 'hides tenant information by default and keeps older configuration files compatible' {
+        $settings = Import-DlpConfiguration -Path $script:ConfigPath -Root $script:Root
+        $settings.Report.ShowTenantInformation | Should -BeFalse
+        $settings.Report.CompanyName | Should -Be ''
+        $settings.Report.EnvironmentName | Should -Be ''
+        $path = Join-Path $TestDrive 'older.config.psd1'
+        (Get-Content $script:ConfigPath -Raw) -replace '(?m)^\s*(CompanyName|ShowTenantInformation|EnvironmentName)\s*=.*\r?\n', '' | Set-Content $path
+        (Import-DlpConfiguration -Path $path -Root $script:Root).Report.ShowTenantInformation | Should -BeFalse
+    }
+    It 'requires a boolean display switch and rejects configurable authors' {
+        $path = Join-Path $TestDrive 'branding.config.psd1'
+        $text = (Get-Content $script:ConfigPath -Raw).Replace('ShowTenantInformation   = $false', "ShowTenantInformation   = 'false'")
+        $text.Replace("CompanyName             = ''", "CompanyName             = ''; Author = 'Other author'") | Set-Content $path
+        { Import-DlpConfiguration -Path $path -Root $script:Root } | Should -Throw -ExpectedMessage '*Report.ShowTenantInformation*Report author is fixed*'
     }
 }
 
@@ -209,6 +237,29 @@ Describe 'Entry script' {
         $LASTEXITCODE | Should -Be 0
         $output | Should -Match 'Ready for the first collection'
         Test-Path -LiteralPath (Join-Path $dir 'data') | Should -BeFalse
+    }
+    It 'returns incomplete for a one-second gap even when coverage rounds to 100 percent' {
+        $dir = Join-Path $TestDrive 'rounded-entry'
+        $settings = New-TestSettings $dir
+        $store = Open-DlpStore -Settings $settings
+        try {
+            $target = $store.GetOrCreateTarget($script:PolicyId, $script:RuleId, 'P', 'R')
+            $run = $store.StartRun('Test', $null, $null, 'test', $null)
+            $i = $store.BeginInterval($run, $target, (Ms '2026-09-28T00:00:00Z'), (Ms '2026-09-28T23:59:59Z'))
+            $store.EndInterval($i, $true, 1, 0, 0, 0, $null)
+            $store.FinishRun($run, 'Completed', '{}')
+        } finally { $store.Dispose() }
+        $path = Join-Path $TestDrive 'rounded-entry.psd1'
+        $text = (Get-Content $script:ConfigPath -Raw).Replace("'.\data\PurviewDlpReport.sqlite'", "'$($settings.Storage.DatabasePath)'")
+        $text = $text.Replace("OutputPath              = '.\reports'", "OutputPath              = '$($settings.Report.OutputPath)'").Replace("Path          = '.\logs'", "Path          = '$dir\logs'")
+        Set-Content $path $text
+        $output = & pwsh -NoProfile -File (Join-Path $script:Root 'Invoke-PurviewDlpReport.ps1') -Mode Report -Range Custom -Start '2026-09-28T00:00:00Z' -End '2026-09-29T00:00:00Z' -NoCollect -ConfigPath $path 2>&1 | Out-String
+        $LASTEXITCODE | Should -Be 2
+        $output | Should -Match 'Report written, but INCOMPLETE'
+        $metadata = Get-ChildItem $settings.Report.OutputPath -Recurse -Filter report-metadata.json | Get-Content -Raw | ConvertFrom-Json
+        $metadata.CoveragePercent | Should -Be 100
+        $metadata.MissingMs | Should -Be 1000
+        $metadata.CoverageComplete | Should -BeFalse
     }
 }
 
@@ -343,6 +394,91 @@ Describe 'Database' {
         $settled[0].Start | Should -Be ($now - 24 * 3600000)
         [Math]::Abs($settled[0].End - ($now - 6 * 3600000)) | Should -BeLessThan 60000
     }
+    It 'reports current and settled coverage separately' {
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        $i = $script:Store.BeginInterval($script:Run, $script:Target, $now - 24 * 3600000, $now - 3600000)
+        $script:Store.EndInterval($i, $true, 1, 0, 0, $null, $null)
+        $coverage = Get-DlpCoverage -Store $script:Store -TargetId $script:Target -StartMs ($now - 24 * 3600000) -EndMs ($now - 3600000) -SettlingMs (6 * 3600000)
+        $coverage.Percent | Should -Be 100
+        $coverage.FinalPercent | Should -BeLessThan 100
+        $coverage.ProvisionalMs | Should -BeGreaterThan 0
+    }
+    It 'does not infer completeness from rounded coverage' {
+        $start = Ms '2026-09-28T00:00:00Z'; $end = $start + 86400000
+        $i = $script:Store.BeginInterval($script:Run, $script:Target, $start, $end - 1000)
+        $script:Store.EndInterval($i, $true, 1, 0, 0, 0, $null)
+        $coverage = Get-DlpCoverage -Store $script:Store -TargetId $script:Target -StartMs $start -EndMs $end
+        $coverage.Percent | Should -Be 100
+        $coverage.MissingMs | Should -Be 1000
+        $coverage.Complete | Should -BeFalse
+    }
+    It 'binds authenticated tenants, flags legacy history and rejects another tenant' {
+        $tenant = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        $script:Store.BindAuthenticatedTenant($tenant) | Should -BeTrue
+        $script:Store.GetMetadata('legacy_tenant_history_unverified') | Should -Be 'true'
+        $script:Store.BindAuthenticatedTenant($tenant.ToUpperInvariant()) | Should -BeFalse
+        { $script:Store.ValidateTenant('bbbbbbbb-cccc-dddd-eeee-ffffffffffff') } | Should -Throw '*Database tenant mismatch*'
+        { $script:Store.BindAuthenticatedTenant('bbbbbbbb-cccc-dddd-eeee-ffffffffffff') } | Should -Throw '*Database tenant mismatch*'
+        $script:Store.GetMetadata('tenant_id') | Should -Be $tenant
+        $settings = New-TestSettings $TestDrive
+        $settings.Storage.DatabasePath = $script:Store.DatabasePath
+        $settings.Tenant.TenantId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'
+        { Open-DlpStore -Settings $settings -ReadOnly } | Should -Throw '*Database tenant mismatch*'
+    }
+    It 'binds an empty database without attributing legacy history' {
+        $settings = New-TestSettings (Join-Path $TestDrive 'fresh-tenant')
+        $store = Open-DlpStore -Settings $settings
+        try {
+            $store.BindAuthenticatedTenant($settings.Tenant.TenantId) | Should -BeFalse
+            $store.GetMetadata('legacy_tenant_history_unverified') | Should -Be 'false'
+        } finally { $store.Dispose() }
+    }
+    It 'classifies only exact source-second boundaries and counts stored versus duplicate observations' {
+        $start = Ms '2026-09-28T00:00:00.851Z'; $end = Ms '2026-09-28T00:01:00Z'
+        $i = $script:Store.BeginInterval($script:Run, $script:Target, $start, $end)
+        $records = @(
+            New-TestRecord -Happened '2026-09-28T00:00:00Z'
+            New-TestRecord -Happened '2026-09-28T00:01:00Z'
+            New-TestRecord -Happened '2026-09-28T00:00:00.500Z'
+            New-TestRecord -Happened '2026-09-28T00:01:00.001Z'
+            New-TestRecord -Happened '2026-09-28T00:01:01Z'
+        )
+        $page = New-TestPageData (ConvertTo-TestPage $records)
+        $first = $script:Store.IngestPage($i, $script:Target, $script:PolicyId, $script:RuleId, $page)
+        $first.OutOfRange | Should -Be 5
+        $first.BoundaryEvents | Should -Be 2
+        $first.BoundaryNewEvents | Should -Be 2
+        $first.BoundaryDuplicates | Should -Be 0
+        $first.UnexpectedOutOfRange | Should -Be 3
+        $first.UnexpectedTimestampSamples[0].StartMs | Should -Be $start
+        $second = $script:Store.IngestPage($i, $script:Target, $script:PolicyId, $script:RuleId, $page)
+        $second.BoundaryDuplicates | Should -Be 2
+        $second.BoundaryNewEvents | Should -Be 0
+        $second.UnexpectedTimestampSamples[0].AlreadyPresent | Should -BeTrue
+        $script:Store.GetStatistics($script:Target).Events | Should -Be 5
+    }
+    It 'describes Status as time coverage rather than collection progress' {
+        $settings = New-TestSettings $TestDrive
+        $settings.Collection.SettlingHours = 6
+        $i = $script:Store.BeginInterval($script:Run, $script:Target, (Ms '2026-09-27T22:00:00Z'), (Ms '2026-09-28T16:00:00Z'))
+        $script:Store.EndInterval($i, $true, 1, 0, 0, 0, $null)
+        $output = Show-DlpStatus -Store $script:Store -TargetId $script:Target -Settings $settings -Days 1 -Now ([DateTimeOffset]'2026-09-28T18:00:00Z') 6>&1 | Out-String
+        $output | Should -Match 'Read-only snapshot.*Europe/Paris'
+        $output | Should -Match 'Today partially covered'
+        $output | Should -Not -Match 'collection in progress'
+        $output | Should -Match 'Not yet covered:.*2026-09-28 18:00.*20:00'
+    }
+    It 'flags normalized events outside their requested interval' {
+        $start = Ms '2026-09-28T00:00:00Z'
+        $end = Ms '2026-09-28T01:00:00Z'
+        $i = $script:Store.BeginInterval($script:Run, $script:Target, $start, $end)
+        $record = New-TestRecord -Happened '2026-09-28T02:00:00Z'
+        $r = $script:Store.IngestPage($i, $script:Target, $script:PolicyId, $script:RuleId, (New-TestPageData (ConvertTo-TestPage @($record))))
+        $r.OutOfRange | Should -Be 1
+        $r.OutOfRangeHappenedMs.Count | Should -Be 1
+        $r.OutOfRangeHappenedMs[0] | Should -Be (Ms '2026-09-28T02:00:00Z')
+        $script:Store.GetStatistics($script:Target).Events | Should -Be 1
+    }
     It 'purges events and coverage older than the retention' {
         $page = New-TestPageData (ConvertTo-TestPage @((New-TestRecord -Happened '2020-01-01T00:00:00Z'), (New-TestRecord -Happened '2026-09-28T00:00:00Z')))
         $null = $script:Store.IngestPage($script:Interval, $script:Target, $script:PolicyId, $script:RuleId, $page)
@@ -419,6 +555,24 @@ Describe 'Collection (fake Activity Explorer)' {
         $plan.UnrecoverableMs | Should -BeGreaterThan 0
         ($plan.Collectable | Select-Object -First 1).Start | Should -Be ($now - 30 * 86400000 + 3600000)
     }
+    It 'aggregates boundary observations without treating them as unexpected timestamps' {
+        $script:Settings.Collection.PageSize = 1000
+        $records = @(New-TestRecord -Happened '2026-09-28T00:00:00Z')
+        $json = ConvertTo-TestPage $records
+        $exporter = { param($Query) [pscustomobject]@{ ResultData = $json; LastPage = $true; ResultCode = 'Success' } }.GetNewClosure()
+        $slices = New-DlpRangeList @([pscustomobject]@{ Start = (Ms '2026-09-28T00:00:00.851Z'); End = (Ms '2026-09-28T00:01:00Z') })
+        $first = Invoke-DlpCollection -Store $script:Store -RunId $script:Run -TargetId $script:Target -Settings $script:Settings -Slices $slices -Exporter $exporter 6>$null
+        $second = Invoke-DlpCollection -Store $script:Store -RunId $script:Run -TargetId $script:Target -Settings $script:Settings -Slices $slices -Exporter $exporter 6>$null
+        $first.Completed | Should -BeTrue -Because $first.Error
+        $second.Completed | Should -BeTrue -Because $second.Error
+        $first.BoundaryNewEvents | Should -Be 1
+        $second.BoundaryDuplicates | Should -Be 1
+        $second.UnexpectedOutOfRange | Should -Be 0
+        $output = Write-DlpCollectionDiagnostics -Collection $second -Zone $script:Paris 6>&1 | Out-String
+        $output | Should -Match '1 already in the database'
+        $output | Should -Match 'none were discarded'
+        $output | Should -Not -Match 'Unexpected timestamps'
+    }
 }
 
 Describe 'Report files' {
@@ -487,8 +641,118 @@ Describe 'Report files' {
         $html | Should -Match 'application/x-dlp-chunk'
         $html | Should -Match '"rows":5'
     }
+    It 'omits tenant and environment from HTML and metadata unless the administrator opts in' {
+        $script:Settings.Report.EnvironmentName = 'Hidden environment marker'
+        try {
+            $out = New-DlpReport -Store $script:Store -TargetId $script:Target -Settings $script:Settings -Period $script:Period -Coverage $script:Coverage
+            $data = Read-TestHtml ($out.Result.Files | Where-Object Kind -eq 'HTML').Path
+            $data.Meta.PSObject.Properties.Name | Should -Not -Contain 'tenantId'
+            $data.Html | Should -Not -Match 'Hidden environment marker|aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee|contoso.onmicrosoft.com'
+            $manifest = Get-Content (Join-Path $out.Directory 'report-metadata.json') -Raw
+            $manifest | Should -Not -Match 'TenantId|TenantOrganization|Hidden environment marker'
+        } finally { $script:Settings.Report.EnvironmentName = '' }
+    }
+    It 'shows opted-in tenant and environment and separate company branding without changing CSV columns' {
+        $script:Settings.Report.ShowTenantInformation = $true
+        $script:Settings.Report.EnvironmentName = 'PFT'
+        $script:Settings.Report.CompanyName = 'Example & Company <Ltd>'
+        try {
+            $null = $script:Store.BindAuthenticatedTenant($script:Settings.Tenant.TenantId)
+            $out = New-DlpReport -Store $script:Store -TargetId $script:Target -Settings $script:Settings -Period $script:Period -Coverage $script:Coverage
+            $data = Read-TestHtml ($out.Result.Files | Where-Object Kind -eq 'HTML').Path
+            $data.Meta.tenantId | Should -Be $script:Settings.Tenant.TenantId
+            $data.Meta.environmentName | Should -Be 'PFT'
+            $data.Meta.companyName | Should -Be 'Example & Company <Ltd>'
+            $data.Meta.author | Should -Be 'Nicolas Fabert'
+            $manifest = Get-Content (Join-Path $out.Directory 'report-metadata.json') -Raw | ConvertFrom-Json
+            $manifest.TenantIdentitySource | Should -Be 'Authenticated collection session'
+            $manifest.LegacyTenantHistoryUnverified | Should -BeTrue
+            $rows = Read-TestCsv ($out.Result.Files | Where-Object Kind -eq 'CSV')
+            @($rows[0].PSObject.Properties.Name).Count | Should -Be 6
+        } finally {
+            $script:Settings.Report.ShowTenantInformation = $false
+            $script:Settings.Report.EnvironmentName = ''; $script:Settings.Report.CompanyName = ''
+        }
+    }
+    It 'shows company branding independently of tenant visibility' {
+        $script:Settings.Report.CompanyName = 'Example Company'
+        try {
+            $out = New-DlpReport -Store $script:Store -TargetId $script:Target -Settings $script:Settings -Period $script:Period -Coverage $script:Coverage
+            $meta = (Read-TestHtml ($out.Result.Files | Where-Object Kind -eq 'HTML').Path).Meta
+            $meta.companyName | Should -Be 'Example Company'
+            $meta.PSObject.Properties.Name | Should -Not -Contain 'tenantId'
+        } finally { $script:Settings.Report.CompanyName = '' }
+    }
+    It 'keeps an exact missing gap and provisional notice despite rounded 100 percent' {
+        $coverage = [pscustomobject]@{
+            Percent = 100; MissingMs = 1; FinalPercent = 100; ProvisionalMs = 1
+            Gaps = @([PurviewDlpReport.TimeRange]::new($script:Period.EndMs - 1, $script:Period.EndMs))
+        }
+        $out = New-DlpReport -Store $script:Store -TargetId $script:Target -Settings $script:Settings -Period $script:Period -Coverage $coverage
+        $data = Read-TestHtml ($out.Result.Files | Where-Object Kind -eq 'HTML').Path
+        $data.Meta.coverageComplete | Should -BeFalse
+        $data.Meta.missingMs | Should -Be 1
+        $data.Meta.coverageNote | Should -Match 'INCOMPLETE.*1 ms missing.*recent data is provisional'
+    }
+    It 'marks a failed refresh incomplete even when the requested period was already covered' {
+        $coverage = [pscustomobject]@{ Percent = 100; MissingMs = 0; FinalPercent = 100; ProvisionalMs = 0; Gaps = @() }
+        $out = New-DlpReport -Store $script:Store -TargetId $script:Target -Settings $script:Settings -Period $script:Period -Coverage $coverage -CollectionFailed
+        $meta = (Read-TestHtml ($out.Result.Files | Where-Object Kind -eq 'HTML').Path).Meta
+        $meta.coverageComplete | Should -BeFalse
+        $meta.collectionSucceeded | Should -BeFalse
+        $meta.coverageNote | Should -Match 'refresh did not finish'
+    }
+    It 'preserves UTC chronology and distinct offsets through autumn and spring daylight-saving changes' {
+        $settings = New-TestSettings (Join-Path $TestDrive 'dst-report')
+        $store = Open-DlpStore -Settings $settings
+        try {
+            $target = $store.GetOrCreateTarget($script:PolicyId, $script:RuleId, 'P', 'R')
+            $run = $store.StartRun('Test', $null, $null, 'test', $null)
+            $start = Ms '2026-03-01T00:00:00Z'; $end = Ms '2026-11-01T00:00:00Z'
+            $i = $store.BeginInterval($run, $target, $start, $end)
+            $times = @('2026-03-29T00:45:00Z', '2026-03-29T01:15:00Z', '2026-10-25T00:45:00.100Z', '2026-10-25T01:15:00.200Z')
+            $records = @($times | ForEach-Object { New-TestRecord -Happened $_ })
+            $null = $store.IngestPage($i, $target, $script:PolicyId, $script:RuleId, (New-TestPageData (ConvertTo-TestPage $records)))
+            $store.EndInterval($i, $true, 1, 4, 4, 4, $null)
+            $period = [pscustomobject]@{ Range = 'Custom'; StartMs = $start; EndMs = $end }
+            $coverage = Get-DlpCoverage -Store $store -TargetId $target -StartMs $start -EndMs $end
+            $out = New-DlpReport -Store $store -TargetId $target -Settings $settings -Period $period -Coverage $coverage
+            $data = Read-TestHtml ($out.Result.Files | Where-Object Kind -eq 'HTML').Path
+            $chunk = $data.Chunks[0]
+            @($chunk.u | Sort-Object) | Should -Be @($times | ForEach-Object { Ms $_ })
+            $autumn = @(0..3 | Where-Object { $chunk.u[$_] -ge (Ms '2026-10-25T00:00:00Z') } | Sort-Object { $chunk.u[$_] })
+            @($autumn | ForEach-Object { $chunk.o[$_] }) | Should -Be @(120, 60)
+            $chunk.t[$autumn[0]] | Should -BeGreaterThan $chunk.t[$autumn[1]]
+            $data.Html | Should -Match 'U\[b\] - U\[a\]'
+            $data.Html | Should -Match 'Detection time \(UTC\)'
+            [PurviewDlpReport.ReportWriter]::FormatLocal((Ms $times[0]), $script:Paris) | Should -Be '2026-03-29 01:45:00'
+            [PurviewDlpReport.ReportWriter]::FormatLocal((Ms $times[1]), $script:Paris) | Should -Be '2026-03-29 03:15:00'
+        } finally { $store.Dispose() }
+    }
     It 'protects CSV cells from formula injection' {
         [PurviewDlpReport.ReportWriter]::SafeCsv('=1+1', ';') | Should -Be "'=1+1"
         [PurviewDlpReport.ReportWriter]::SafeCsv('a;b', ';') | Should -Be '"a;b"'
+    }
+}
+
+Describe 'Packaging' {
+    It 'clears branding and disables tenant display without rejecting generic environment names in documentation' {
+        $source = Join-Path $TestDrive 'package-source'
+        [void][IO.Directory]::CreateDirectory($source)
+        Copy-Item -LiteralPath $script:Root -Destination (Join-Path $source 'package') -Recurse
+        Copy-Item -LiteralPath (Join-Path $script:RepoRoot 'tools') -Destination $source -Recurse
+        $config = Join-Path $source 'package\config\PurviewDlpReport.config.psd1'
+        [void][IO.Directory]::CreateDirectory((Split-Path $config -Parent))
+        $text = (Get-Content $script:ConfigPath -Raw).Replace('contoso.onmicrosoft.com', 'packaging-fixture.onmicrosoft.com').Replace("CompanyName             = ''", "CompanyName             = 'Example Company'")
+        $text = $text.Replace("EnvironmentName         = ''", "EnvironmentName         = 'PFT'").Replace('ShowTenantInformation   = $false', 'ShowTenantInformation   = $True')
+        Set-Content -LiteralPath $config -Value $text
+        $destination = Join-Path $TestDrive 'package-result'
+        & (Join-Path $source 'tools\New-DlpPackage.ps1') -Destination $destination 6>$null
+        $packaged = Import-PowerShellDataFile (Join-Path $destination 'config\PurviewDlpReport.config.psd1')
+        $packaged.Report.CompanyName | Should -Be ''
+        $packaged.Report.EnvironmentName | Should -Be ''
+        $packaged.Report.ShowTenantInformation | Should -BeFalse
+        $packaged.Tenant.TenantId | Should -Be ''
+        Test-Path (Join-Path $destination 'data') | Should -BeFalse
     }
 }

@@ -1,9 +1,9 @@
 ---
 title: Purview DLP Report
 subtitle: Developer guide
-version: 2.1.1
+version: 2.1.2
 author: Nicolas Fabert
-updated: 2026-10-08
+updated: 2026-10-13
 ---
 
 # Purview DLP Report — Developer guide
@@ -175,7 +175,8 @@ Check without connecting | `.\Invoke-PurviewDlpReport.ps1 -Mode Status` — chec
 | `lib\sqlite\` | SQLite libraries (see `THIRD-PARTY-NOTICES.md`) |
 | `docs\PurviewDlpReport-UserGuide.html` | The user guide — everyday commands |
 | `docs\PurviewDlpReport-Guide.html` | This guide |
-| `data\` · `reports\` · `logs\` · `bin\` | Created at run time — the package contains **no database**, the first run creates an empty one. **Back up `data\`**: it is the only history beyond 30 days. |
+| `Test-PackageIntegrity.ps1` · `PackageIntegrity.psd1` | Signed verifier and signed stable-file SHA256 inventory; mandatory before loading code. |
+| `data\` · `reports\` · `logs\` | Created at run time — the package contains **no database**, the first run creates an empty one. **Back up `data\`**: it is the only history beyond 30 days. Old `bin\` caches are ignored, never loaded. |
 
 > [!NOTE]
 > The package holds only what is needed to run. The git repository of the tool also contains both Markdown guides in `package\docs\`, `tests\` (automated tests) and `tools\` (documentation builder, package builder) — see chapters 11 to 13.
@@ -225,7 +226,7 @@ Get-DlpComplianceRule   -Identity '<rule name>'   | Select-Object Name, Immutabl
 | `SliceHours` | `24` | Longest request window. Windows never cross local midnight. |
 | `SettlingHours` | `6` | The last hours are collected again at the next run (late events). |
 | `BackfillDays` | `30` | How far back `-Mode Collect` and the first collection go. |
-| `SourceRetentionDays` | `30` | Activity Explorer retention. Older missing periods are reported as lost. |
+| `SourceRetentionDays` | `30` | Activity Explorer retention, accepted range 1–30 days. Older missing periods are reported as lost. |
 | `RetentionWarningDays` | `7` | Warn when a missing period will be lost within this many days. |
 | `MaxSliceRestarts` | `2` | Retries of a window after an error, before splitting it in two. |
 | `MinimumSliceMinutes` · `MaxPagesPerSlice` · `CookieSafetySeconds` | `15` · `2000` · `105` | Safety limits — no need to change them. |
@@ -249,6 +250,16 @@ Get-DlpComplianceRule   -Identity '<rule name>'   | Select-Object Name, Immutabl
 | `IncludeRecipientDetails` | `$true` | `$true`: recipient addresses in CSV and HTML. `$false`: count only — CSV about 6× smaller. |
 | `SplitBy` · `MaxRowsPerFile` | `Week` · `500000` | Splitting, used only above `MaxRowsPerFile` (chapter 10). |
 | `CsvDelimiter` · `Title` | `;` · … | `;` opens directly in Excel with French regional settings. |
+
+| Additional report setting | Default | Meaning |
+|---|---|---|
+| `CompanyName` | `''` | Optional company branding in HTML and `report-metadata.json`, independent of tenant visibility. |
+| `ShowTenantInformation` | `$false` | Administrator opt-in to embed tenant, configured organization and environment in HTML and metadata. Disabled means these values are absent. CSV columns stay unchanged. |
+| `EnvironmentName` | `''` | Optional administrator-defined environment label, displayed only with tenant opt-in; not discovered or verified. |
+
+The author is fixed to **Nicolas Fabert**. `Report.Author` and `Report.AuthorName` are rejected; use company branding instead. Each database is bound to the tenant verified at its first authenticated collection; a different configured/session tenant is rejected even offline. Use a separate `DatabasePath` per tenant. The first authenticated collection binds a legacy database with a warning: historical tenant attribution remains unverified. An unbound offline report labels any opted-in tenant as configuration-only.
+
+`SettlingHours` must be lower than source retention; nonzero storage retention must be at least `BackfillDays`, to avoid purging history only to recollect it.
 
 ### Logging and console
 
@@ -374,6 +385,10 @@ Icons: ✅ done · 🔹 information · ⚠️ attention · ❌ error · ⏩ step
 
 Each day shows its messages, a **coverage bar** and a state: *Complete*, *Complete, refreshed at next run*, *Missing, collectable N more days*, or *no longer collectable*.
 
+`Status` is a **read-only snapshot**, not collection progress. Coverage measures queried time, not a percentage of events received. Past days use their full local duration (23, 24 or 25 hours); today uses midnight to the snapshot. Its percentage can decrease without another collection. A partial day shows remaining windows and `-Mode Collect`.
+
+Source boundary observations are informational. Only exact second-level starting boundaries before a subsecond start, or an exact inclusive end, qualify; there is no general one-second tolerance. All events are retained with normal duplicate detection. Other out-of-range timestamps remain warnings with bounded diagnostic samples. Report filters still apply `[start, end)`.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -387,6 +402,10 @@ Each day shows its messages, a **coverage bar** and a state: *Complete*, *Comple
 
 <!-- icon: chart -->
 ## 9. Reading the results
+
+Completeness uses the **exact missing duration**, not the rounded percentage: even a one-millisecond gap remains incomplete. A failed collection/refresh also marks the report incomplete. Recent coverage can be provisional after `SettlingHours`; queried time does not prove every late event has arrived.
+
+`report-metadata.json` accompanies CSV-only and HTML reports: missing/provisional durations, completeness, timezone, UTC period, fixed author and optional branding/tenant metadata. HTML times include the UTC offset, UTC details and UTC chronological sorting through daylight-saving changes. Compatible CSV columns retain local dates without an offset.
 
 ### The HTML report
 
@@ -428,7 +447,7 @@ Click a row to see every recipient, with a **Copy recipients** button:
 Each report creates a folder `reports\<date>_<range>\` with the CSV and HTML files.
 
 > [!TIP]
-> Files are written in `<folder>.pending`, renamed only when everything is complete: **a folder without `.pending` is always a complete report**.
+> Files are written in `<folder>.pending`, renamed only when file generation is complete. **A folder without `.pending` does not prove full coverage**: check the summary, exit code and `report-metadata.json`.
 
 ```steps
 Up to MaxRowsPerFile messages | **One CSV + one HTML**, whatever the period (500,000 by default).
@@ -494,7 +513,7 @@ The engine groups the events of the period by message (first detection time, cou
 | `Invoke-PurviewDlpReport.ps1` | — | Parameters, the 5 steps, summary, exit code. **Start reading here.** |
 | `PurviewDlpReport.psm1` | Region 1 · Console and log | Theme (colours, icons), banner, steps, items, table rows, summary card, log |
 | | Region 2 · Configuration | `Import-DlpConfiguration` — every check of the .psd1 |
-| | Region 3 · Engine | `Initialize-DlpEngine` — loads SQLite, compiles `src\*.cs` into `bin\` |
+| | Region 3 · Engine | `Initialize-DlpEngine` — verifies stable files before loading SQLite and compiles authenticated C# in memory once per process |
 | | Region 4 · Periods and coverage | `Resolve-DlpPeriod`, `Get-DlpCollectionPlan`, `Get-DlpCoverage` |
 | | Region 5 · Connection | `Connect-DlpActivityExplorer` — tenant/account checks, prefix `PdrAe` |
 | | Region 6 · Collection | `Test-DlpPageEnvelope`, `Invoke-DlpCollection` |
@@ -565,7 +584,7 @@ cd D:\Tools\PurviewDlpReport
 Invoke-Pester -Path .\tests\PurviewDlpReport.Tests.ps1 -Output Detailed
 ```
 
-**36 tests, a few seconds, no connection to Microsoft 365.**
+**Offline Pester regression and integrity tests, no connection to Microsoft 365.**
 
 ```cards
 settings | Configuration & periods | Validation, summer/winter time, month boundaries.
@@ -708,6 +727,20 @@ SELECT reason, COUNT(*) FROM quarantine GROUP BY reason;
 <!-- icon: tag -->
 ## Annex E — Versioning and release checklist
 
+### Signed package integrity
+
+Version 2.1.2 authenticates sixteen mandatory raw SHA256 entries: the four signed runtime scripts (`Invoke-PurviewDlpReport.ps1`, `PurviewDlpReport.psm1`, `PurviewDlpReport.psd1`, `Test-PackageIntegrity.ps1`), C# source, six original vendor DLLs, report template, README, third-party notices and both HTML guides. `PackageIntegrity.psd1` is separately signed and timestamped after those bytes are finalized. All five owner signatures must be valid, timestamped and match `0F28E442889F17B5F4D251E8F96E7CC6E2C9C6D6`; bundled DLLs retain their vendor authorship.
+
+Both a repository `package` checkout and the distributed folder use the same manifest. The only unhashed source documents allowed are `LICENSE`, the two named Markdown guides and these ten PNGs under `docs\images`: `console-report`, `console-status`, `readme-banner-dark`, `readme-banner-light`, `readme-how-it-works-dark`, `readme-how-it-works-light`, `readme-principles-dark`, `readme-principles-light`, `report-details`, `report-overview`. They are not loaded at runtime or copied into the distribution; both distributed HTML guides embed their own images and are hashed. This is not a wildcard allowance for documents, scripts or libraries.
+
+Configuration is intentionally unsigned/editable. Generated `data`, `logs`, `reports` and ignored `bin` caches are not authenticated code and must never supply engine/template inputs. Missing manifests, wrong signers, absent timestamps, hash changes, unexpected stable files and protected reparse points block loading. Reparse-point ancestors are rejected; use a normal relocated Windows folder. These checks are not a sandbox against an administrator or an already-compromised PowerShell process.
+
+Before unblocking downloads, inspect the publisher, trust chain and signatures with `Get-AuthenticodeSignature`. Follow organizational execution policy; never force an unsigned mode or disable integrity checks. Native Windows trust/revocation evaluation can require issuer connectivity. Missing trust or unavailable chain validation remains blocking; do not install arbitrary roots to bypass it. Windows PowerShell 5.1 can inspect signatures only; the business runtime requires 7.4+ (tested on 7.6.6, not every supported minor release or recipient machine).
+
+For a source/resource change: edit reviewed sources, update the version, rebuild both HTML guides with the existing builder **before signing**, validate offline logic, sign and timestamp the four final scripts, then regenerate the sixteen-entry manifest from final raw bytes and sign/timestamp it. Run the unmocked tests and existing packager afterward; never regenerate protected files after the manifest or use test trust in a shipped package. `.gitattributes` preserves exact covered bytes through checkout. Certificate rotation needs a reviewed pin update and a complete re-signing/timestamp/manifest sequence; simply substituting another certificate fails.
+
+The packager checks source authenticity before copying and verifies the copied distribution after sanitizing only configuration. It preserves README, both HTML guides and existing runtime paths. C# is recompiled in memory in each fresh process; warm initialization and report generation recheck integrity. This adds startup/check overhead. Limited functional/offline tests are not broad load or production coverage.
+
 Version numbers follow **MAJOR.MINOR.PATCH** — MAJOR: incompatible change (configuration or database) · MINOR: new feature · PATCH: fix. The version appears in `package\PurviewDlpReport.psd1`, `$script:ToolVersion`, the file headers, this guide and `CHANGELOG.md`. The folder is a **git** repository (`git log --oneline`, `git tag`).
 
 ```steps
@@ -716,7 +749,7 @@ Version | Update the version everywhere, and `CHANGELOG.md`.
 Tests | `Invoke-Pester -Path .\tests` — all green.
 Real data | For a change of the collection or the engine: offline replay, then one live run.
 Documentation | Update the guides, then `.\tools\Build-Documentation.ps1` to regenerate the HTML.
-Release | `git add -A`, `git commit`, `git tag vX.Y.Z`.
+Release | Preview the exact public diff, open a short-lived PR against current main, pass required validation and merge. Create a new `vX.Y.Z` tag only on the reviewed main commit; never replace a published tag/asset.
 Package | `.\tools\New-DlpPackage.ps1` — copies the files needed to run into `..\package\PurviewDlpReport-X.Y.Z`, tenant values emptied, no database. Zip this folder to deliver it.
 ```
 

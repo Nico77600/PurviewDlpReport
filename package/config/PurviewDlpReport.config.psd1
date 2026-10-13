@@ -2,7 +2,7 @@
 #  Purview DLP Report - configuration file
 #  --------------------------------------------------------------------------
 #  Author  : Nicolas Fabert
-#  Version : 2.1.1
+#  Version : 2.1.2
 #
 #  This file is read by Invoke-PurviewDlpReport.ps1. It is a PowerShell data
 #  file: text between quotes, $true / $false, numbers, and @( ) for lists.
@@ -99,6 +99,10 @@
         MaxRowsPerFile          = 500000           # no split below this number of messages; maximum 1,048,575 (Excel limit)
         CsvDelimiter            = ';'              # ';' opens directly in Excel with French regional settings
         Title                   = 'DLP messages with more than 25 recipients'
+        CompanyName             = ''              # optional company name in HTML and report-metadata.json
+        ShowTenantInformation   = $false          # opt-in only: tenant and environment in HTML and metadata (not CSV)
+        EnvironmentName         = ''              # optional administrator-defined environment label
+                                                  # author is fixed to Nicolas Fabert, not configurable
     }
 
     # ---------------------------------------------------------------------

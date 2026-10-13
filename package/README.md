@@ -11,6 +11,18 @@ This folder contains everything needed to run the tool: `Invoke-PurviewDlpReport
 > Get-ChildItem . -Recurse -File | Unblock-File
 > ```
 
+## Signed package integrity (2.1.2)
+
+The five signed PowerShell files (launcher, module, module metadata, verifier and `PackageIntegrity.psd1`) require valid Nicolas Fabert signatures and RFC3161 timestamps. Expected signer: `0F28E442889F17B5F4D251E8F96E7CC6E2C9C6D6`. The verifier authenticates sixteen stable raw SHA256 entries, including the C# source, original vendor DLLs, template, README and both HTML guides. Missing or changed files, unexpected stable code and protected reparse points fail before code loading; there is no unsigned fallback.
+
+Edit only `config\PurviewDlpReport.config.psd1`. `data`, `logs`, `reports` and old `bin` output are not trusted code. Repository-only `LICENSE`, the two Markdown guides and the ten named `docs\images\*.png` sources are an explicit, unhashed documentation boundary; they are not loaded at runtime or copied by the packager. Unknown documentation names and executable files are not exempt.
+
+Review the publisher and trusted chain before unblocking downloads. Follow your organization's execution policy; do not disable it or integrity verification to resolve an error. Chain/revocation checks can need access to issuer services; an unavailable or untrusted chain is a blocking failure, not a reason to import arbitrary trust roots. See the HTML developer guide for source edits and certificate rotation.
+
+Verified C# compiles in memory once per process. Startup recompilation and warm checks have overhead; unsigned engine caches are never loaded. PowerShell 7.4+ is required (business tests used 7.6.6); Windows PowerShell 5.1 is for signature inspection only. Offline and limited functional testing are not broad performance or production validation.
+
+Coverage measures queried time. Check `report-metadata.json` and the exit code: a rounded 100% or a folder without `.pending` does not prove complete coverage. Tenant/environment display is disabled by default; company branding is independent of the fixed author.
+
 ## Requirements
 
 - PowerShell 7.4 or later; 7.6 for ExchangeOnlineManagement 3.10 or later.
@@ -37,7 +49,7 @@ notepad .\config\PurviewDlpReport.config.psd1      # TenantId, PolicyId, RuleId,
 | `config\` | Configuration file to fill in. |
 | `docs\` | User and developer guides, Markdown and self-contained HTML. |
 | `lib\` | Bundled SQLite libraries. |
-| `src\` | C# engine source, compiled on first use. |
+| `src\` | Authenticated C# engine source, compiled in memory once per process. |
 | `templates\` | HTML report template. |
 | `Invoke-PurviewDlpReport.ps1` | Entry script. |
 | `PurviewDlpReport.psd1` | Module manifest. |
