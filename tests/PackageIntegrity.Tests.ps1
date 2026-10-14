@@ -2,10 +2,14 @@
 # Real signature, timestamp, hashing and filesystem checks; no trust mocks.
 BeforeAll {
     $script:Source = Join-Path (Split-Path $PSScriptRoot -Parent) 'package'
-    $script:Fixture = Join-Path $TestDrive 'signed-runtime'
+    $script:FixtureNumber = 0
+    $script:Fixture = $null
     function Reset-SignedFixture {
         Remove-Module PurviewDlpReport -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $script:Fixture) { Remove-Item -LiteralPath $script:Fixture -Recurse -Force }
+        # Loaded SQLite assemblies stay locked on Windows until the test process exits.
+        $script:FixtureNumber++
+        $script:Fixture = Join-Path $TestDrive ('signed-runtime-{0:D4}' -f $script:FixtureNumber)
+        if (Test-Path -LiteralPath $script:Fixture) { throw "Unexpected existing test fixture: $script:Fixture" }
         Copy-Item -LiteralPath $script:Source -Destination $script:Fixture -Recurse
     }
     function Invoke-RealGuard {
